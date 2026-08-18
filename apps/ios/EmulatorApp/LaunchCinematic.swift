@@ -75,6 +75,7 @@ struct LaunchCinematicView: View {
     @State private var runTask: Task<Void, Never>?
 
     private let player = BootPlayer()
+    private let insert = InsertSound()
 
     var body: some View {
         GeometryReader { geo in
@@ -158,7 +159,8 @@ struct LaunchCinematicView: View {
             withAnimation(.easeIn(duration: Cine.dive * 0.4).delay(Cine.dive * 0.6)) { cartFaded = true }
             try? await Task.sleep(for: .seconds(Cine.dive - Cine.seatLead))
             if Task.isCancelled { return }
-            UIImpactFeedbackGenerator(style: .heavy).impactOccurred()   // the "cha-chunk" seat
+            insert.play()                                              // the real "cha-chunk" clip
+            UIImpactFeedbackGenerator(style: .heavy).impactOccurred()   // + a heavy haptic seat
             try? await Task.sleep(for: .seconds(Cine.seatLead + Cine.videoGap))
             if Task.isCancelled { return }
 
@@ -191,6 +193,31 @@ struct LaunchCinematicView: View {
             player.teardown()
             onDone()
         }
+    }
+}
+
+// MARK: - Cartridge insert sound (bundled cartridge-insert.caf)
+
+/// Plays the real "cha-chunk" cartridge-seat clip when the cart lands in the slot. Preloaded so the
+/// hit is sample-tight with the haptic; silent no-op if the .caf is missing.
+@MainActor
+private final class InsertSound {
+    private let audio: AVAudioPlayer?
+
+    init() {
+        guard let url = Bundle.main.url(forResource: "cartridge-insert", withExtension: "caf") else {
+            NSLog("LaunchCinematic: missing cartridge-insert.caf"); audio = nil; return
+        }
+        // Mix over the shared .playback session (ambient loop keeps going underneath).
+        try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
+        try? AVAudioSession.sharedInstance().setActive(true)
+        audio = try? AVAudioPlayer(contentsOf: url)
+        audio?.prepareToPlay()
+    }
+
+    func play() {
+        audio?.currentTime = 0
+        audio?.play()
     }
 }
 
