@@ -1,0 +1,30 @@
+# SwiftPM
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/
+*.xcworkspace/xcuserdata/
+DerivedData/
+# iOS app build output (xcodebuild -derivedDataPath)
+apps/ios/build/
+apps/ios/build-device/
+
+# Vendored native build outputs
+vendor/**/build/
+vendor/install/
+*.a
+*.dylib
+
+# Local run artifacts
+/out/
+*.ppm
+*.png.tmp
+
+# macOS
+.DS_Store
+
+# Release artifacts
+/dist/
