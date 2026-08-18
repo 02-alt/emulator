@@ -9,6 +9,8 @@ import ContinuityKit
 struct LibraryView: View {
     @Environment(LibraryModel.self) private var library
     @Environment(ContinuityService.self) private var continuity
+    @Environment(LaunchCoordinator.self) private var launcher
+    @State private var focusedFrame: CGRect = .zero
     @State private var importing = false
     @State private var importError: String?
     @State private var focusedID: Game.ID?
@@ -88,10 +90,18 @@ struct LibraryView: View {
                             // focus (scrolls it to center) rather than launching from off-center.
                             Group {
                                 if game.id == focusedGame?.id {
-                                    NavigationLink(value: PlayRequest(game: game)) {
+                                    Button {
+                                        launcher.begin(game, coverURL: library.covers[game.romHash],
+                                                       from: focusedFrame)
+                                    } label: {
                                         CartCard(game: game, coverURL: library.covers[game.romHash],
                                                  width: cardW, isFocused: true)
                                     }
+                                    .background(
+                                        GeometryReader { g in
+                                            Color.clear.preference(key: FocusedCartFrameKey.self,
+                                                                   value: g.frame(in: .global))
+                                        })
                                 } else {
                                     Button {
                                         withAnimation(.snappy) { focusedID = game.id }
@@ -130,6 +140,7 @@ struct LibraryView: View {
                 .scrollPosition(id: $focusedID)
                 .scrollIndicators(.hidden)
                 .scrollClipDisabled()   // let card shadows / receding neighbors overflow cleanly
+                .onPreferenceChange(FocusedCartFrameKey.self) { focusedFrame = $0 }
 
                 VStack(spacing: 8) {
                     focusedTitle
@@ -240,6 +251,13 @@ struct LibraryView: View {
             importError = error.localizedDescription
         }
     }
+}
+
+/// Reports the focused cart's frame in global (screen) coordinates so the launch cinematic can lift
+/// off from exactly where the cart sits in the carousel.
+private struct FocusedCartFrameKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
 }
 
 /// A single hero cartridge: the GBA cart silhouette with the cover art in its label window —

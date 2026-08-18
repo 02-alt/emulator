@@ -12,6 +12,7 @@ struct PlayRequest: Hashable {
 struct EmulatorApp: App {
     @State private var library = LibraryModel()
     @State private var continuity = ContinuityService()
+    @State private var launcher = LaunchCoordinator()
 
     @State private var path: [PlayRequest] = []
 
@@ -21,14 +22,31 @@ struct EmulatorApp: App {
 
     var body: some Scene {
         WindowGroup {
-            NavigationStack(path: $path) {
-                LibraryView()
-                    .navigationDestination(for: PlayRequest.self) {
-                        GameView(game: $0.game, resume: $0.resume)
-                    }
+            ZStack {
+                NavigationStack(path: $path) {
+                    LibraryView()
+                        .navigationDestination(for: PlayRequest.self) {
+                            GameView(game: $0.game, resume: $0.resume)
+                        }
+                }
+
+                // Cartridge launch cinematic: while a launch is in flight it covers the screen with an
+                // opaque black stage, lifts the focused cart, dives it into the screen, plays the GBA
+                // boot clip, then presents the game beneath itself and fades away to reveal it.
+                if let game = launcher.game {
+                    LaunchCinematicView(
+                        game: game,
+                        coverURL: launcher.coverURL,
+                        startFrame: launcher.startFrame,
+                        onPresentGame: { path.append(PlayRequest(game: game)) },
+                        onDone: { launcher.end() })
+                        .ignoresSafeArea()
+                        .zIndex(1)
+                }
             }
             .environment(library)
             .environment(continuity)
+            .environment(launcher)
             .preferredColorScheme(.dark)
             .tint(.white)
             .task {
