@@ -46,6 +46,15 @@ enum WhatsNew {
         // nil marker = fresh install (skip); same version = already seen; empty notes = nothing to say.
         guard let last, last != version, !items.isEmpty else { return false }
 
+        return present(in: window)
+    }
+
+    /// Show the notes on demand — the same card `maybeShow` presents on launch, but ignoring the
+    /// once-per-build marker. Wired to the "Release Notes" button in Settings ▸ About so the highlights
+    /// are always re-readable. No-op (returns false) on a dev build with no version to describe.
+    @discardableResult
+    static func present(in window: NSWindow?) -> Bool {
+        guard let version else { return false }
         return AppAlert.present(in: window,
             symbol: nil,
             title: "What’s New",

@@ -255,19 +255,21 @@ final class LibraryWindowController: NSObject {
             var game = base
             if let managed = copyIntoLibrary(tmp) { game.romPath = managed.path }
             try? FileManager.default.removeItem(at: tmp)
-            place(&game)
+            place(&game)   // fetchArt re-downloads the same box art for the shelf; the cover below is for the flourish
             reload()
 
             // ROM is now local — retire the ROM offer so it doesn't linger in iCloud. The savestate
-            // *session* is intentionally left in place so the Continue card can resume it below.
+            // *session* is intentionally left in place so the Continue card can resume it afterward.
             await continuity.clearROM(romHash: offer.romHash)
 
-            // Confirm the arrival visibly rather than jumping straight into the game: a toast the user
-            // can actually read, plus `refreshContinueCard` re-points the shelf's Continue row at the
-            // freshly-imported game ("CONTINUE FROM <device>"). One more click resumes where they left
-            // off — the same two-step the iPhone side uses.
-            Toast.show(in: window, "\(game.displayTitle) — transferred from \(offer.deviceName)", style: .info)
-            refreshContinueCard()
+            // Celebrate the arrival NameDrop-style (matching the iPhone), then reveal the Continue card
+            // so one more click resumes exactly where the other device left off.
+            let cover = (await continuity.downloadROMCover(romHash: offer.romHash)
+                ?? offer.card.thumbnailPNG).flatMap { NSImage(data: $0) }
+            NameDropArrival.show(in: window, game: game, cover: cover,
+                                 device: offer.deviceName) { [weak self] in
+                self?.refreshContinueCard()
+            }
         }
     }
 
@@ -335,8 +337,12 @@ final class LibraryWindowController: NSObject {
             Task {
                 await continuity.publish(game: game, state: snap.state,
                                          thumbnailPNG: snap.thumbnailPNG, secondsPlayed: snap.seconds)
-                // Terminal moment — also offer this game's ROM for transfer, if the user opted in.
-                await continuity.offerROMIfEnabled(game: game)
+                // Terminal moment — also offer this game's ROM for transfer, if the user opted in. A
+                // fresh offer (not a re-upload) confirms with a small "sent" notification.
+                if await continuity.offerROMIfEnabled(game: game) {
+                    Toast.show(in: window, "Sent \(game.displayTitle) to your other devices",
+                               symbol: "iphone.and.arrow.forward", style: .success)
+                }
             }
         } else {
             continuity.schedulePublish(game: game, state: snap.state,
@@ -743,13 +749,36 @@ extension LibraryWindowController: NSWindowDelegate {
 }
 
 extension LibraryWindowController: NSToolbarDelegate {
-    // The toolbar is kept only for the unified titlebar chrome — it carries no items now. The library
-    // scope (All Games / Hidden) lives in the pull-up FilterDrawer above the footer bar, and
-    // Add ROMs lives in the footer glass buttons.
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [] }
+    // The toolbar is kept for the unified titlebar chrome. It carries one right-aligned item: a quick
+    // "play the arrival animation" button (a preview of the Handoff transfer flourish). The library
+    // scope lives in the pull-up FilterDrawer; Add ROMs lives in the footer glass buttons.
+    static let arrivalDemoItem = NSToolbarItem.Identifier("arrivalDemo")
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.flexibleSpace, Self.arrivalDemoItem]   // flexible space pushes the button to the top-right
+    }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.flexibleSpace, .space]
+        [.flexibleSpace, .space, Self.arrivalDemoItem]
     }
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
-                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? { nil }
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        guard id == Self.arrivalDemoItem else { return nil }
+        let item = NSToolbarItem(itemIdentifier: id)
+        item.label = "Arrival"
+        item.toolTip = "Preview the Handoff arrival animation"
+        item.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Play arrival animation")
+        item.isBordered = true
+        item.target = self
+        item.action = #selector(playArrivalDemo)
+        return item
+    }
+
+    /// Play the NameDrop-style arrival flourish over the shelf, using the first library game's cover —
+    /// a one-click preview of what a received transfer looks like, without needing a second device.
+    @objc private func playArrivalDemo() {
+        guard let g = store.games.first else { return }
+        NameDropArrival.show(in: window, game: g, cover: nil, device: "iPhone") { [weak self] in
+            self?.refreshContinueCard()
+        }
+    }
 }

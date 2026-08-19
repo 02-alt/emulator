@@ -31,6 +31,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lib.show()
             library = lib
             installMenu(addGamesTarget: lib)
+            if ProcessInfo.processInfo.environment["EMU_DEBUG_ABOUT"] != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                    self?.openSettings()
+                    self?.settings?.showAboutDebug()
+                }
+            }
+            if ProcessInfo.processInfo.environment["EMU_DEBUG_TROPHY"] != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    let host = NSApp.windows.first { $0.contentView is LibraryDashboardView } ?? NSApp.keyWindow
+                    TrophyPop.show(in: host, title: "Minish Cap Master", points: 25)
+                }
+            }
         }
     }
 

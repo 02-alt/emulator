@@ -43,6 +43,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// DEBUG: open straight to the About tab (used to screenshot the Release Notes button).
+    func showAboutDebug() { settings.selectAboutDebug() }
+
     func windowWillClose(_ notification: Notification) {
         settings.commit()   // persist any edited-but-unsaved RA fields
         onClose?()
@@ -110,6 +113,9 @@ final class SettingsView: NSView {
     /// so a value changed elsewhere (e.g. the in-game ambience popover) while it was closed would
     /// otherwise leave the pane showing a stale snapshot.
     func refresh() { select(selected) }
+
+    /// DEBUG: jump to the About tab.
+    func selectAboutDebug() { select(Tab.about.rawValue) }
 
     /// Persist any edited-but-unsaved RA fields. Call before the view is dismissed/closed.
     func commit() {
@@ -420,6 +426,15 @@ final class SettingsView: NSView {
             stack.addArrangedSubview(checkButton)
             stack.addArrangedSubview(updateStatus)
             stack.addArrangedSubview(downloadButton)
+
+            // Re-open the "What's New" card that greets you after an update — always re-readable here.
+            // Dormant on dev builds (no bundled version to describe), so only offer it when there is one.
+            if WhatsNew.version != nil {
+                let releaseNotes = PixelButton(title: "Release Notes") { [weak self] in
+                    WhatsNew.present(in: self?.window)
+                }
+                stack.addArrangedSubview(releaseNotes)
+            }
 
             // Privacy — what leaves the device, and (mostly) what doesn't.
             stack.addArrangedSubview(header("Privacy"))

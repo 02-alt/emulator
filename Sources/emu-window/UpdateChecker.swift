@@ -19,6 +19,7 @@ enum UpdateChecker {
     /// The running app's version (`CFBundleShortVersionString`), or nil for an unbundled dev build.
     static var currentVersion: String? {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+            ?? ProcessInfo.processInfo.environment["EMU_FAKE_VERSION"]
     }
 
     static func check(current: String) async -> Outcome {

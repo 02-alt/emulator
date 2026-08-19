@@ -14,6 +14,7 @@ final class SoundFX {
     private let player = AVAudioPlayerNode()
     private var cartridgeBuffer: AVAudioPCMBuffer?
     private var trophyBuffer: AVAudioPCMBuffer?
+    private var receivedBuffer: AVAudioPCMBuffer?
     private var started = false
 
     private init() {
@@ -21,6 +22,7 @@ final class SoundFX {
         let format = cartridgeBuffer?.format
             ?? AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
         trophyBuffer = Self.makeTrophyChime()
+        receivedBuffer = Self.makeReceivedChime()
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: format)
     }
@@ -46,6 +48,59 @@ final class SoundFX {
             player.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
             if !player.isPlaying { player.play() }
         } catch { NSLog("SoundFX: engine start failed: \(error)") }
+    }
+
+    /// Play the "received" cue — a subtle, classy two-note glass chime for an arriving transfer.
+    func playReceived() {
+        guard let buffer = receivedBuffer else { return }
+        do {
+            if !started { try engine.start(); started = true }
+            player.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
+            if !player.isPlaying { player.play() }
+        } catch { NSLog("SoundFX: engine start failed: \(error)") }
+    }
+
+    /// Synthesize a minimalist "you received something" chime — the AirDrop-adjacent cue for an arriving
+    /// game. Two soft glassy notes rising a gentle perfect fourth (D5 → G5), the second entering just
+    /// after the first, each a sine plus faint higher partials for a bell-like sheen, with a soft attack
+    /// and a long smooth decay. Very quiet, slightly stereo-widened (the upper note detuned a hair
+    /// between channels) so it reads as "classy and understated," not a notification blast.
+    private static func makeReceivedChime(sampleRate: Double = 44_100) -> AVAudioPCMBuffer? {
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format,
+                                            frameCapacity: AVAudioFrameCount(sampleRate * 0.8)),
+              let ch = buffer.floatChannelData else { return nil }
+        buffer.frameLength = buffer.frameCapacity
+        let n = Int(buffer.frameLength)
+        let note1 = 587.33          // D5
+        let note2 = 783.99          // G5 — a gentle perfect fourth up
+        let note2Start = 0.11
+        let amp = 0.11
+
+        func env(_ dt: Double, decay: Double) -> Double {
+            if dt < 0 { return 0 }
+            let attack = 0.006
+            return dt < attack ? dt / attack : exp(-(dt - attack) / decay)
+        }
+        // A soft glassy voice: fundamental + faint 2nd/3rd partials.
+        func voice(_ f: Double, _ t: Double, _ e: Double) -> Double {
+            amp * e * (sin(2 * .pi * f * t)
+                       + 0.18 * sin(2 * .pi * f * 2 * t)
+                       + 0.06 * sin(2 * .pi * f * 3 * t))
+        }
+        for i in 0..<n {
+            let t = Double(i) / sampleRate
+            let e1 = env(t, decay: 0.5)
+            let t2 = t - note2Start
+            let e2 = env(t2, decay: 0.5)
+            let base = voice(note1, t, e1)
+            // Detune the upper note a touch per channel for a subtle stereo shimmer.
+            let left = base + voice(note2 - 0.8, t2, e2)
+            let right = base + voice(note2 + 0.8, t2, e2)
+            ch[0][i] = Float(left)
+            ch[1][i] = Float(right)
+        }
+        return buffer
     }
 
     /// Synthesize a minimalist trophy chime: two soft sine notes a perfect fifth apart (A5 → E6),

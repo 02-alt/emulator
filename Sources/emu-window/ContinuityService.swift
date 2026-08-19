@@ -108,9 +108,15 @@ final class ContinuityService {
     /// Offer a game's ROM so a device that lacks it can receive and import it — only when the user has
     /// opted in. Called from the immediate publish path (returning to library / quit), not the debounced
     /// one, so the multi-MB upload happens on terminal moments rather than during play. No-op otherwise.
-    func offerROMIfEnabled(game: Game) async {
-        guard Self.transferEnabled else { return }
-        await offerROM(game: game)
+    /// Returns true only when a **new** offer was uploaded — so the caller can confirm "sent" exactly
+    /// once. Returns false when transfer is off, iCloud is unusable, the ROM was already offered (we skip
+    /// the multi-MB re-upload), or the upload failed.
+    @discardableResult
+    func offerROMIfEnabled(game: Game) async -> Bool {
+        guard Self.transferEnabled, let coordinator else { return false }
+        // Already offered? Skip the re-upload and the duplicate "sent" confirmation.
+        if (try? await coordinator.romOffer(forRomHash: game.romHash)) != nil { return false }
+        return await offerROM(game: game)
     }
 
     /// Actively offer a game's ROM to the user's other devices now — backs the "Send to My Devices"
@@ -166,6 +172,13 @@ final class ContinuityService {
     func downloadROM(romHash: String) async -> Data? {
         guard let coordinator else { return nil }
         return try? await coordinator.fetchROM(forRomHash: romHash)
+    }
+
+    /// Download the offered box art for a transfer (small), or nil if none rode along. Lets the receiver
+    /// show the exact cover the sender had and drive the arrival animation. Runs off the main actor.
+    func downloadROMCover(romHash: String) async -> Data? {
+        guard let coordinator else { return nil }
+        return try? await coordinator.fetchROMCover(forRomHash: romHash)
     }
 
     /// Drop the ROM offer once it's been received here, so it doesn't linger in iCloud.
