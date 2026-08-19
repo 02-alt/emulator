@@ -69,7 +69,7 @@ let package = Package(
         // Live Metal window + flat "Analogue OS" library + glass play UI. AppKit + MetalKit (macOS).
         .executableTarget(
             name: "emu-window",
-            dependencies: ["EmulatorCore", "GBACore", "LibraryKit"],
+            dependencies: ["EmulatorCore", "GBACore", "LibraryKit", "ContinuityKit"],
             resources: [.process("Resources")]   // bundled Departure Mono pixel font (SIL OFL)
         ),
 
