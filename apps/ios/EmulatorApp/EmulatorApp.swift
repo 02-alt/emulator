@@ -38,7 +38,14 @@ struct EmulatorApp: App {
                         game: game,
                         coverURL: launcher.coverURL,
                         startFrame: launcher.startFrame,
-                        onPresentGame: { path.append(PlayRequest(game: game)) },
+                        // Mount the game with the push animation SUPPRESSED, so it doesn't slide in
+                        // from the trailing edge. The cinematic is still opaque-black over it at this
+                        // point; it then fades away (rootGone) to cross-dissolve the game into view.
+                        onPresentGame: {
+                            var tx = Transaction()
+                            tx.disablesAnimations = true
+                            withTransaction(tx) { path.append(PlayRequest(game: game)) }
+                        },
                         onDone: { launcher.end() })
                         .ignoresSafeArea()
                         .zIndex(1)
@@ -75,7 +82,6 @@ struct EmulatorApp: App {
 /// A small local echo of the macOS `DesignSystem` so the iOS UI reads from the same intent.
 enum DS {
     static let background = Color.black
-    static let surface = Color(white: 0.10)
     static let hairline = Color.white.opacity(0.14)
     static let textPrimary = Color.white
     static let textSecondary = Color(white: 0.62)

@@ -10,16 +10,22 @@ struct LibraryView: View {
     @Environment(LibraryModel.self) private var library
     @Environment(ContinuityService.self) private var continuity
     @Environment(LaunchCoordinator.self) private var launcher
-    @State private var focusedFrame: CGRect = .zero
     @State private var importing = false
     @State private var importError: String?
-    @State private var focusedID: Game.ID?
+    /// Index of the centered cart in the coverflow — the single source of truth for which cart is
+    /// focused (its title shows, it's the one that launches). The carousel keeps this in sync so the
+    /// visual centre and the "focused" cart can never drift apart.
+    @State private var selected = 0
     @State private var settingsGame: Game?
     @State private var detailsGame: Game?
     @State private var showSettings = false
     @State private var showSearch = false
 
-    private static let gbaType = UTType(filenameExtension: "gba") ?? .data
+    // Every ROM extension we import, across all supported systems (GBA + Game Boy / Color), as UTTypes
+    // for the Files picker. `.data` stays in the list too, so a ROM Files reports as plain data is
+    // still selectable; `handleImport` filters on the real extension.
+    private static let romTypes: [UTType] =
+        ROMImporter.supportedExtensions.compactMap { UTType(filenameExtension: $0) }
 
     var body: some View {
         ZStack {
@@ -44,14 +50,16 @@ struct LibraryView: View {
         .sheet(isPresented: $showSearch) {
             GameSearchView(games: library.games, covers: library.covers) { game in
                 showSearch = false
-                withAnimation(.snappy) { focusedID = game.id }
+                if let idx = library.games.firstIndex(where: { $0.id == game.id }) {
+                    withAnimation(.snappy) { selected = idx }
+                }
             }
         }
         // Apple-Music-style floating bottom bar: Settings · now-playing capsule · Import.
         .safeAreaInset(edge: .bottom) { bottomBar }
         .fileImporter(
             isPresented: $importing,
-            allowedContentTypes: [Self.gbaType, .data],
+            allowedContentTypes: Self.romTypes + [.data],
             allowsMultipleSelection: true
         ) { handleImport($0) }
         .alert("Import failed", isPresented: .constant(importError != nil)) {
@@ -76,71 +84,25 @@ struct LibraryView: View {
             // so the title + handle always clear the bottom bar in the short landscape layout.
             let cardH = min(Self.maxCardHeight, max(96, geo.size.height - 180))
             let cardW = cardH * Self.cardAspect
-            // Symmetric leading/trailing inset = half the free width, so the snap-aligned (focused)
-            // cart lands dead-center in any orientation instead of being pinned to a fixed margin.
-            let sideInset = max(20, (geo.size.width - cardW) / 2)
 
             VStack(spacing: 20) {
                 Spacer(minLength: 0)
 
-                ScrollView(.horizontal) {
-                    HStack(spacing: 20) {
-                        ForEach(library.games) { game in
-                            // Tap the centered cart to launch it; tap any other cart to bring it to
-                            // focus (scrolls it to center) rather than launching from off-center.
-                            Group {
-                                if game.id == focusedGame?.id {
-                                    Button {
-                                        launcher.begin(game, coverURL: library.covers[game.romHash],
-                                                       from: focusedFrame)
-                                    } label: {
-                                        CartCard(game: game, coverURL: library.covers[game.romHash],
-                                                 width: cardW, isFocused: true)
-                                    }
-                                    .background(
-                                        GeometryReader { g in
-                                            Color.clear.preference(key: FocusedCartFrameKey.self,
-                                                                   value: g.frame(in: .global))
-                                        })
-                                } else {
-                                    Button {
-                                        withAnimation(.snappy) { focusedID = game.id }
-                                    } label: {
-                                        CartCard(game: game, coverURL: library.covers[game.romHash],
-                                                 width: cardW, isFocused: false)
-                                    }
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .contextMenu {
-                                Button { detailsGame = game } label: {
-                                    Label("Details", systemImage: "info.circle")
-                                }
-                                Button { settingsGame = game } label: {
-                                    Label("Settings", systemImage: "slider.horizontal.3")
-                                }
-                                Button(role: .destructive) { library.delete(game) } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            }
-                            // Distance-scale for depth; the focus recede (glass + cover dim) is baked
-                            // into the cart itself so a centered cart matches the Mac's selected cart.
-                            .scrollTransition { view, phase in
-                                view.scaleEffect(phase.isIdentity ? 1 : 0.9)
-                            }
-                        }
-                    }
-                    .scrollTargetLayout()
-                    .padding(.horizontal, sideInset)
-                }
-                // Pin the scroll view to the cart's height (+shadow room) so a horizontal scroll
-                // view doesn't greedily claim the vertical space and push everything upward.
-                .frame(height: cardH + 36)
-                .scrollTargetBehavior(.viewAligned)
-                .scrollPosition(id: $focusedID)
-                .scrollIndicators(.hidden)
-                .scrollClipDisabled()   // let card shadows / receding neighbors overflow cleanly
-                .onPreferenceChange(FocusedCartFrameKey.self) { focusedFrame = $0 }
+                // Coverflow shelf: the centered cart is always `selected` (its title shows below, and
+                // it's the one that launches). Ports the macOS shelf's feel — 1:1 drag scrub, continuous
+                // distance-scale/dim, momentum-projected spring settle — so centre and focus never drift.
+                CartShelf(
+                    games: library.games,
+                    covers: library.covers,
+                    cardW: cardW,
+                    selected: $selected,
+                    onLaunch: { game, frame in
+                        launcher.begin(game, coverURL: library.covers[game.romHash], from: frame)
+                    },
+                    onContextDetails: { detailsGame = $0 },
+                    onContextSettings: { settingsGame = $0 },
+                    onContextDelete: { library.delete($0) })
+                    .frame(height: cardH + 40)
 
                 VStack(spacing: 8) {
                     focusedTitle
@@ -150,12 +112,25 @@ struct LibraryView: View {
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())   // make the whole shelf area a swipe target, gaps included
+            // Swipe up anywhere on the shelf to raise the focused cart's details — the tiny handle
+            // below was a hard-to-hit target. Simultaneous (not high-priority) so the horizontal
+            // carousel still scrolls; only a dominant *upward* drag opens details, so a sideways
+            // flick to change carts never triggers it.
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 24)
+                    .onEnded { value in
+                        let up = value.translation.height < -40
+                        let vertical = abs(value.translation.height) > abs(value.translation.width) * 1.3
+                        if up, vertical, let game = focusedGame { detailsGame = game }
+                    }
+            )
         }
     }
 
-    /// The currently centered cart (falls back to the first game before any scroll).
+    /// The currently centered cart (the coverflow keeps `selected` clamped to a valid index).
     private var focusedGame: Game? {
-        library.games.first { $0.id == focusedID } ?? library.games.first
+        library.games.indices.contains(selected) ? library.games[selected] : library.games.first
     }
 
     private var focusedTitle: some View {
@@ -166,7 +141,7 @@ struct LibraryView: View {
             Text(focusedGame?.system.displayName ?? "")
                 .font(DS.mono(10)).foregroundStyle(DS.textTertiary)
         }
-        .animation(.default, value: focusedID)
+        .animation(.default, value: selected)
     }
 
     /// A tucked-away pull-up handle — the iOS echo of the Mac's hidden filter drawer. Faint by
@@ -198,7 +173,7 @@ struct LibraryView: View {
         VStack(spacing: 14) {
             Image(systemName: "gamecontroller").font(.system(size: 40)).foregroundStyle(DS.textTertiary)
             Text("NO GAMES").font(DS.mono(15, .semibold)).foregroundStyle(DS.textSecondary)
-            Text("Tap ＋ to import a .gba ROM from Files")
+            Text("Tap ＋ to import a .gba, .gbc or .gb ROM from Files")
                 .font(DS.mono(12)).foregroundStyle(DS.textTertiary).multilineTextAlignment(.center)
         }
         .padding()
@@ -220,8 +195,10 @@ struct LibraryView: View {
             circleButton("plus") { importing = true }
                 .accessibilityLabel("Import ROM")
         }
+        // Standard 16pt side margins; balanced vertical padding leaves breathing room above the home
+        // indicator per HIG (rather than sitting flush against the bottom safe-area inset).
         .padding(.horizontal, 16)
-        .padding(.top, 8)
+        .padding(.vertical, 8)
     }
 
     private func circleButton(_ icon: String, action: @escaping () -> Void) -> some View {
@@ -253,11 +230,110 @@ struct LibraryView: View {
     }
 }
 
-/// Reports the focused cart's frame in global (screen) coordinates so the launch cinematic can lift
-/// off from exactly where the cart sits in the carousel.
-private struct FocusedCartFrameKey: PreferenceKey {
-    static var defaultValue: CGRect = .zero
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
+/// A coverflow cartridge shelf — the iOS port of the macOS `LibraryDashboardView` carousel. The
+/// `selected` cart sits dead-centre; neighbours fan out on both sides and *continuously* scale + dim
+/// with their distance from centre, so the visual centre, the focused cart, and the title below are
+/// always the same game. A 1:1 horizontal drag scrubs; on release the flick's momentum
+/// (`predictedEndTranslation`) is projected to the nearest cart and the shelf springs to it — the same
+/// feel as the Mac shelf, but without SwiftUI's `ScrollView`, whose `.scrollPosition` reported a
+/// different cart than the one on screen (the centre/focus drift you filmed).
+private struct CartShelf: View {
+    let games: [Game]
+    let covers: [String: URL]
+    let cardW: CGFloat
+    @Binding var selected: Int
+    /// The centered cart was tapped — launch it, with its exact on-screen (global) frame so the
+    /// cinematic lifts off from the shelf.
+    var onLaunch: (Game, CGRect) -> Void
+    var onContextDetails: (Game) -> Void
+    var onContextSettings: (Game) -> Void
+    var onContextDelete: (Game) -> Void
+
+    private static let gap: CGFloat = 22
+    /// Live 1:1 finger offset during a horizontal scrub (0 at rest).
+    @State private var drag: CGFloat = 0
+    /// Axis lock, decided on the first meaningful movement: a vertical drag is left to the shelf's
+    /// swipe-up-for-details gesture, so scrubbing and details-swipe never fight.
+    @State private var axis: Axis?
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width, h = geo.size.height
+            let step = cardW + Self.gap
+            let center = w / 2
+            let cardH = cardW / LibraryView.cardAspect
+            let sel = min(max(0, selected), games.count - 1)
+
+            ZStack {
+                ForEach(visibleIndices(around: sel), id: \.self) { i in
+                    let x = center + CGFloat(i - sel) * step + drag
+                    let d = min(1, abs(x - center) / step)     // 0 at centre → 1 a full step away
+                    CartCard(game: games[i], coverURL: covers[games[i].romHash],
+                             width: cardW, isFocused: true)
+                        .scaleEffect(1 - d * 0.12)            // centre full size, neighbours recede
+                        .opacity(1 - d * 0.45)                // …and dim with distance (depth)
+                        .position(x: x, y: h / 2)
+                        .zIndex(1 - d)                        // centre cart draws on top
+                        .contextMenu {
+                            Button { onContextDetails(games[i]) } label: {
+                                Label("Details", systemImage: "info.circle")
+                            }
+                            Button { onContextSettings(games[i]) } label: {
+                                Label("Settings", systemImage: "slider.horizontal.3")
+                            }
+                            Button(role: .destructive) { onContextDelete(games[i]) } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                        .onTapGesture {
+                            if i == sel {
+                                let g = geo.frame(in: .global)
+                                let frame = CGRect(x: g.minX + center - cardW / 2,
+                                                   y: g.minY + h / 2 - cardH / 2,
+                                                   width: cardW, height: cardH)
+                                onLaunch(games[i], frame)
+                            } else {
+                                withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { selected = i }
+                            }
+                        }
+                }
+            }
+            .frame(width: w, height: h)
+            .contentShape(Rectangle())
+            .gesture(scrub(step: step))
+            .onChange(of: games.count) { _, count in
+                if selected >= count { selected = max(0, count - 1) }
+            }
+        }
+    }
+
+    /// Render only the carts near the centre (±4) — the rest are off-screen either way.
+    private func visibleIndices(around sel: Int) -> [Int] {
+        let lo = max(0, sel - 4), hi = min(games.count - 1, sel + 4)
+        return lo <= hi ? Array(lo...hi) : []
+    }
+
+    private func scrub(step: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { v in
+                if axis == nil {
+                    axis = abs(v.translation.width) >= abs(v.translation.height) ? .horizontal : .vertical
+                }
+                if axis == .horizontal { drag = v.translation.width }
+            }
+            .onEnded { v in
+                defer { axis = nil }
+                guard axis == .horizontal else { return }
+                // Project where the flick coasts to, snap to the nearest cart (cap the jump so a hard
+                // fling stays controllable), then spring there while the finger offset unwinds to 0.
+                let move = Int((-v.predictedEndTranslation.width / step).rounded())
+                let target = min(max(0, selected + max(-4, min(4, move))), games.count - 1)
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
+                    selected = target
+                    drag = 0
+                }
+            }
+    }
 }
 
 /// A single hero cartridge: the GBA cart silhouette with the cover art in its label window —
@@ -272,14 +348,26 @@ private struct CartCard: View {
     var isFocused: Bool = true
 
     var body: some View {
-        GBACartridgeView(
-            cover: coverURL.flatMap { UIImage(contentsOfFile: $0.path) },
+        // Every cell is the same landscape size (so the coverflow's scroll math stays uniform). A GBA
+        // cart fills it; a Game Boy cart is genuinely smaller — portrait, at the cell's full height —
+        // and centers within the cell, so the shelf reads as a mix of real cartridge sizes.
+        let cellH = width / LibraryView.cardAspect
+        let cartW = game.system == .gba ? width : cellH * CartridgeView.cartAspect(for: game.system)
+        CartridgeView(
+            system: game.system,
+            cover: CoverStore.image(at: coverURL),
             title: game.displayTitle,
             systemTag: game.system.shortName,
             intensity: isFocused ? 1 : 0.62,
-            coverOpacity: isFocused ? 1 : 0.85
+            coverOpacity: isFocused ? 1 : 0.85,
+            crop: game.coverCrop
         )
-        .frame(width: width, height: width / LibraryView.cardAspect)
+        .frame(width: cartW, height: cellH)
+        .frame(width: width, height: cellH)   // center the (possibly narrower) cart in the uniform cell
+        // Flatten the vector cart (Canvas) into one GPU texture so the carousel's scroll scaling is
+        // pure compositing — without this the Canvas re-rasterises every frame as it scales and the
+        // scroll visibly hitches (same trick the launch cinematic uses).
+        .drawingGroup()
         .shadow(color: .black.opacity(0.5), radius: 12, y: 8)
         .animation(.default, value: isFocused)
     }
@@ -312,7 +400,21 @@ private struct NowPlayingCapsule: View {
             .frame(maxWidth: .infinity)
             .frame(height: 54)
             .background(.ultraThinMaterial, in: Capsule())
-            .overlay(Capsule().stroke(Color.green.opacity(0.35), lineWidth: 1))
+            .overlay(
+                // Liquid-glass rim: a soft, static top-lit specular highlight along the edge.
+                Capsule().stroke(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.5),
+                            Color.white.opacity(0.12),
+                            Color.white.opacity(0.04),
+                        ],
+                        startPoint: UnitPoint(x: 0.5, y: 0.15),
+                        endPoint: UnitPoint(x: 0.5, y: 0.95)
+                    ),
+                    lineWidth: 0.75
+                )
+            )
         }
         .buttonStyle(.plain)
     }
@@ -323,7 +425,10 @@ private struct NowPlayingCapsule: View {
             Image(uiImage: image).resizable().aspectRatio(contentMode: .fill)
                 .frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 7))
         } else {
-            RoundedRectangle(cornerRadius: 7).fill(DS.background).frame(width: 40, height: 40)
+            // No captured frame yet: preview the game's stylized cartridge label, like the shelf.
+            CartridgeView(system: game.system, cover: nil,
+                          title: game.displayTitle, systemTag: game.system.shortName)
+                .frame(width: 40, height: 40)
         }
     }
 

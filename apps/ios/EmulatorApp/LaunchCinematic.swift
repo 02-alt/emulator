@@ -47,8 +47,9 @@ private enum Cine {
     static let bootLength: Double = 4.0      // boot clip runtime before crossfading to the game
     static let toBlack: Double = 0.32        // dip to black at the end of the clip
     static let reveal: Double = 0.35         // fade the overlay away to reveal the game
-    static let cartAspect: CGFloat = 1.78    // cart w:h (matches GBACartridgeView / LibraryView)
+    static let cartAspect: CGFloat = 1.78    // GBA cart w:h (matches GBACartridgeView / LibraryView)
     static let screenAspect: CGFloat = 1.5   // GBA screen is 3:2
+    static let gbcHeightCap: CGFloat = 320   // portrait Game Boy hero cart's height, capped
 }
 
 // MARK: - Cinematic view
@@ -66,6 +67,8 @@ struct LaunchCinematicView: View {
     private enum Phase { case shelf, lifted, dived }
 
     @State private var phase: Phase = .shelf
+    @State private var stageDimmed = false    // stage dissolves to black under the lifting cart
+    @State private var startedAt = Date()     // for the first-beat skip guard
     @State private var cartFaded = false
     @State private var screenOn = false       // boot panel opacity
     @State private var screenSeated = false   // boot panel spring scale (0.9 → 1)
@@ -80,15 +83,24 @@ struct LaunchCinematicView: View {
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width, h = geo.size.height
-            let baseWidth = min(w * Cine.baseWidthFrac, Cine.baseWidthCap)
-            let baseHeight = baseWidth / Cine.cartAspect
+            // Size the hero cart to its console's true proportions: the GBA cart is wide and sized by
+            // width; the Game Boy cart is portrait and sized by height so it reads as a hero without
+            // spanning the screen.
+            let cartAspect = CartridgeView.cartAspect(for: game.system)
+            let baseHeight = game.system == .gba
+                ? min(w * Cine.baseWidthFrac, Cine.baseWidthCap) / cartAspect
+                : min(h * 0.40, Cine.gbcHeightCap)
+            let baseWidth = baseHeight * cartAspect
             let stage = CGPoint(x: w / 2, y: h * Cine.stageCenterY)
+            // The boot panel takes the game's real screen aspect (GBA 3:2, Game Boy / Color 10:9).
             let panelW = min(w * 0.86, 440)
-            let panelH = panelW / Cine.screenAspect
+            let panelH = panelW / game.system.screenAspect
 
             ZStack {
-                // Black stage: the library (already pure black) is hidden instantly beneath it.
-                Color.black.ignoresSafeArea()
+                // Black stage: dissolves in as the cart lifts, so the carousel (title, now-playing
+                // capsule, neighbouring carts) dims away *beneath* the rising hero rather than being
+                // cut to black in a single frame — the iOS analog of the Mac's dissolving shelf text.
+                Color.black.opacity(stageDimmed ? 1 : 0).ignoresSafeArea()
 
                 // The GBA boot clip, seated where the cart lands.
                 BootPlayerView(player: player)
@@ -101,10 +113,18 @@ struct LaunchCinematicView: View {
                     .opacity(screenOn ? 1 : 0)
                     .position(stage)
 
-                // The hero cartridge — same artwork the carousel draws.
-                GBACartridgeView(cover: coverImage, title: game.displayTitle,
-                                 systemTag: game.system.shortName, intensity: 1, coverOpacity: 1)
+                // The hero cartridge — same artwork the carousel draws, in the game's console shape.
+                CartridgeView(system: game.system, cover: coverImage, title: game.displayTitle,
+                              systemTag: game.system.shortName, intensity: 1, coverOpacity: 1,
+                              crop: game.coverCrop)
                     .frame(width: baseWidth, height: baseHeight)
+                    // Rasterise the vector cart into ONE GPU texture up front (its frame is fixed at
+                    // centre-stage size). The lift/dive then animate as pure texture compositing —
+                    // scaleEffect/position never re-invoke the Canvas — so the motion is glass-smooth,
+                    // matching the Mac's "render once, animate the layer transform" launch. Without
+                    // this, SwiftUI re-rasterises the vector Canvas every frame as it scales and the
+                    // lift visibly hitches.
+                    .drawingGroup()
                     .shadow(color: .black.opacity(0.5), radius: 12, y: 8)
                     .scaleEffect(cartScale(baseWidth: baseWidth))
                     .opacity(cartFaded ? 0 : 1)
@@ -115,7 +135,9 @@ struct LaunchCinematicView: View {
             }
             .opacity(rootGone ? 0 : 1)
             .contentShape(Rectangle())
-            .onTapGesture { finish() }   // a tap skips straight to the game
+            // A tap skips straight to the game — but not in the opening beat, so the very tap that
+            // launched the game (and any stray double-tap) can't skip it before it's even seen.
+            .onTapGesture { if Date().timeIntervalSince(startedAt) > 0.6 { finish() } }
             .task { run() }
             .onDisappear { runTask?.cancel(); player.teardown() }
         }
@@ -123,9 +145,19 @@ struct LaunchCinematicView: View {
 
     // MARK: Poses (derived from `phase`, so animating `phase` animates position + scale)
 
+    /// The captured carousel frame, but only when it's real. If the preference never landed a valid
+    /// value (`.zero`), we must NOT use it — `.position` on a zero frame pins the cart to the screen's
+    /// top-left corner, so the lift then flies in diagonally from `(0,0)`. `nil` here means "no known
+    /// shelf spot", and the poses below fall back to rising straight up from just below centre stage.
+    private var shelf: CGRect? {
+        startFrame.width > 1 && startFrame.height > 1 ? startFrame : nil
+    }
+
     private func cartCenter(stage: CGPoint, h: CGFloat, baseHeight: CGFloat) -> CGPoint {
         switch phase {
-        case .shelf:  return CGPoint(x: startFrame.midX, y: startFrame.midY)
+        case .shelf:
+            if let shelf { return CGPoint(x: shelf.midX, y: shelf.midY) }
+            return CGPoint(x: stage.x, y: stage.y + baseHeight * 0.55)   // just below centre stage
         case .lifted: return stage
         case .dived:  return CGPoint(x: stage.x, y: h + baseHeight * Cine.diveDepth)
         }
@@ -133,24 +165,29 @@ struct LaunchCinematicView: View {
 
     private func cartScale(baseWidth: CGFloat) -> CGFloat {
         switch phase {
-        case .shelf:  return max(0.2, startFrame.width / baseWidth)
+        case .shelf:
+            if let shelf { return max(0.2, shelf.width / baseWidth) }
+            return 0.86   // carousel carts sit a touch smaller than centre stage
         case .lifted: return 1
         case .dived:  return Cine.diveScale
         }
     }
 
     private var coverImage: UIImage? {
-        coverURL.flatMap { UIImage(contentsOfFile: $0.path) }
+        CoverStore.image(at: coverURL)
     }
 
     // MARK: Sequence
 
     private func run() {
         runTask = Task { @MainActor in
+            startedAt = Date()
             await Task.yield()   // let the first frame render at the shelf pose before animating
 
-            // Phase 1 — lift off the shelf to centre stage (ease-in-out, like the Mac's lift).
+            // Phase 1 — lift off the shelf to centre stage (ease-in-out, like the Mac's lift), while
+            // the stage dims to black under it so the carousel dissolves rather than cutting away.
             withAnimation(.timingCurve(0.42, 0, 0.2, 1, duration: Cine.lift)) { phase = .lifted }
+            withAnimation(.easeOut(duration: Cine.lift * 0.9)) { stageDimmed = true }
             try? await Task.sleep(for: .seconds(Cine.lift + Cine.hold))
             if Task.isCancelled { return }
 

@@ -18,9 +18,14 @@ struct GameSettingsView: View {
     // -1 == inherit; otherwise a speed multiplier ×100 (e.g. 100 == 1×).
     @State private var speedPct: Int
     @State private var pickedPhoto: PhotosPickerItem?
+    @State private var coverCrop: CoverCrop?
+    @State private var showCrop = false
+    /// Whether this game is pinned to its default stylized cart label (drives the cover buttons).
+    @State private var usingDefaultCover = false
 
     init(game: Game) {
         self.game = game
+        _coverCrop = State(initialValue: game.coverCrop)
         _filterRaw = State(initialValue: game.overrideFilter ?? -1)
         switch game.overrideSwapAB {
         case true?: _swap = State(initialValue: .on)
@@ -55,17 +60,43 @@ struct GameSettingsView: View {
                         Text("2×").tag(200)
                     }
                 }
-                Section("Cover") {
+                Section {
                     HStack {
                         coverThumbnail
                         PhotosPicker(selection: $pickedPhoto, matching: .images) {
                             Label("Choose from Photos", systemImage: "photo")
                         }
                     }
+                    if currentCoverImage != nil {
+                        Button { showCrop = true } label: {
+                            Label("Adjust Frame…", systemImage: "crop")
+                        }
+                    }
+                    if usingDefaultCover {
+                        Button {
+                            library.restoreDownloadedCover(for: game)
+                            usingDefaultCover = false
+                        } label: {
+                            Label("Use Downloaded Art", systemImage: "arrow.down.circle")
+                        }
+                    } else {
+                        Button {
+                            library.useDefaultCover(for: game)
+                            coverCrop = nil
+                            usingDefaultCover = true
+                        } label: {
+                            Label("Use Default Cover", systemImage: "rectangle.on.rectangle")
+                        }
+                    }
+                } header: {
+                    Text("Cover")
+                } footer: {
+                    Text("The default cover is the stylized cartridge label — a monogram of the title with the system tag, matching the shelf's look.")
                 }
             }
             .navigationTitle(game.displayTitle)
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear { usingDefaultCover = library.usesDefaultCover(game) }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { save(); dismiss() } }
             }
@@ -74,22 +105,33 @@ struct GameSettingsView: View {
                 Task {
                     if let data = try? await item.loadTransferable(type: Data.self) {
                         library.setCover(fromImageData: data, for: game)
+                        coverCrop = nil   // the old framing doesn't apply to a new image
                     }
+                }
+            }
+            .sheet(isPresented: $showCrop) {
+                if let image = currentCoverImage {
+                    CoverCropEditor(image: image, initial: coverCrop, system: game.system) { coverCrop = $0 }
                 }
             }
         }
         .preferredColorScheme(.dark)
     }
 
+    private var currentCoverImage: UIImage? {
+        library.covers[game.romHash].flatMap { UIImage(contentsOfFile: $0.path) }
+    }
+
     @ViewBuilder
     private var coverThumbnail: some View {
-        if let url = library.covers[game.romHash], let image = UIImage(contentsOfFile: url.path) {
+        if !usingDefaultCover, let url = library.covers[game.romHash], let image = UIImage(contentsOfFile: url.path) {
             Image(uiImage: image).resizable().aspectRatio(contentMode: .fill)
                 .frame(width: 44, height: 44).clipShape(RoundedRectangle(cornerRadius: 6))
         } else {
-            RoundedRectangle(cornerRadius: 6).fill(.gray.opacity(0.3))
+            // No cover (or pinned to default): preview the stylized cartridge label itself.
+            CartridgeView(system: game.system, cover: nil,
+                          title: game.displayTitle, systemTag: game.system.shortName)
                 .frame(width: 44, height: 44)
-                .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
         }
     }
 
@@ -102,6 +144,7 @@ struct GameSettingsView: View {
         case .off: updated.overrideSwapAB = false
         }
         updated.overrideSpeed = speedPct < 0 ? nil : Double(speedPct) / 100.0
+        updated.coverCrop = coverCrop
         library.update(updated)
     }
 }

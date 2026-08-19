@@ -29,6 +29,7 @@ final class EmulationSession: @unchecked Sendable {
     private var speed = 1.0
     private var paused = false
     private var rewinding = false
+    private var rewindEnabled = AppSettings.rewindEnabled   // off = capture no history (saves CPU/memory)
     private let stateLock = NSLock()
 
     // Rewind ring: periodic savestates (emulation-thread-only, so no lock needed). Holding rewind
@@ -91,6 +92,13 @@ final class EmulationSession: @unchecked Sendable {
     /// Hold to rewind: while true, the loop replays buffered states backward instead of advancing.
     func setRewinding(_ value: Bool) {
         stateLock.lock(); rewinding = value; stateLock.unlock()
+    }
+
+    /// Toggle rewind capture. When off, no history is recorded (and the existing ring is dropped), so
+    /// a player who never rewinds pays nothing for it.
+    func setRewindEnabled(_ value: Bool) {
+        stateLock.lock(); rewindEnabled = value; stateLock.unlock()
+        if !value { enqueue { [weak self] _ in self?.rewindRing.removeAll(keepingCapacity: false) } }
     }
 
     /// Live master volume (0…1), applied to the audio engine immediately.
@@ -186,6 +194,33 @@ final class EmulationSession: @unchecked Sendable {
         return FileManager.default.fileExists(atPath: url.path)
     }
 
+    // MARK: - Numbered save slots (multi-save, like the macOS "Save States" panel)
+
+    /// Write a full save state to an explicit slot file, plus a PNG thumbnail of the current frame
+    /// alongside it (so the slots panel can show a preview). `completion` runs on the main thread.
+    func saveState(toSlotStateURL stateURL: URL, thumbURL: URL,
+                   completion: @escaping (Bool) -> Void) {
+        let thumb = latestFramePNG()
+        enqueue { core in
+            let ok: Bool
+            do { try core.saveState().write(to: stateURL, options: .atomic); ok = true }
+            catch { ok = false }
+            if ok, let thumb { try? thumb.write(to: thumbURL, options: .atomic) }
+            DispatchQueue.main.async { completion(ok) }
+        }
+    }
+
+    /// Restore a full save state from an explicit slot file.
+    func loadState(fromSlotStateURL url: URL, completion: @escaping (Bool) -> Void) {
+        guard let data = try? Data(contentsOf: url) else { completion(false); return }
+        enqueue { [weak self] core in
+            let ok: Bool
+            do { try core.loadState(data); ok = true; self?.rewindRing.removeAll(keepingCapacity: true) }
+            catch { ok = false }
+            DispatchQueue.main.async { completion(ok) }
+        }
+    }
+
     // MARK: - Continuity snapshot
 
     /// Capture a full save state plus a PNG of the latest frame, for cross-device "continue where you
@@ -238,13 +273,16 @@ final class EmulationSession: @unchecked Sendable {
             drainCommands()
 
             stateLock.lock()
-            let speed = self.speed; let paused = self.paused; let rewinding = self.rewinding
+            let speed = self.speed; let paused = self.paused
+            let rewinding = self.rewinding; let rewindEnabled = self.rewindEnabled
             stateLock.unlock()
 
             if paused {
                 // hold on the last frame
             } else if rewinding {
-                if let state = rewindRing.popLast() {
+                // Replay recent snapshots backward (muted). If capture is disabled or history is
+                // exhausted, hold on the current frame rather than advancing forward.
+                if rewindEnabled, let state = rewindRing.popLast() {
                     try? core.loadState(state)
                     core.runFrame()
                     back.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!) }
@@ -263,7 +301,7 @@ final class EmulationSession: @unchecked Sendable {
                 // feed the ring at real time — muting while fast-forwarded.
                 drainAudio(mute: speed > 1.0)
 
-                captureRewindStateIfNeeded()
+                if rewindEnabled { captureRewindStateIfNeeded() }
             }
 
             if !paused && !rewinding && speed == 1.0 {

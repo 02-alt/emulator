@@ -1,4 +1,67 @@
 import SwiftUI
+import UIKit
+import LibraryKit
+
+/// In-memory cache of decoded cover art, keyed by file path. `UIImage(contentsOfFile:)` re-reads AND
+/// re-decodes the file on every call — and the carousel calls it from inside a view `body`, so a plain
+/// load decodes every cover from disk on each scroll frame, which stutters badly. Route cover loads
+/// through here so repeated body evaluations are just a cache hit (already-decoded bitmap).
+@MainActor
+enum CoverStore {
+    private static let cache = NSCache<NSString, UIImage>()
+
+    static func image(at url: URL?) -> UIImage? {
+        guard let url else { return nil }
+        let key = url.path as NSString
+        if let cached = cache.object(forKey: key) { return cached }
+        guard let image = UIImage(contentsOfFile: url.path) else { return nil }
+        cache.setObject(image, forKey: key)
+        return image
+    }
+}
+
+/// Draws a game's cartridge in the shape of its console: the wide GBA shell for Game Boy Advance
+/// carts, the near-square portrait Game Boy shell for Game Boy / Color carts. A thin dispatcher so
+/// call sites (shelf, launch cinematic) stay system-agnostic — they hand it the game's system and the
+/// same cover/title/intensity params both underlying carts share.
+struct CartridgeView: View {
+    let system: GameSystem
+    let cover: UIImage?
+    let title: String
+    let systemTag: String
+    var intensity: CGFloat = 1
+    var coverOpacity: Double = 1
+    var crop: CoverCrop? = nil
+
+    var body: some View {
+        switch system {
+        case .gba:
+            GBACartridgeView(cover: cover, title: title, systemTag: systemTag,
+                             intensity: intensity, coverOpacity: coverOpacity, crop: crop)
+        case .gbc:
+            GBCCartridgeView(cover: cover, title: title, systemTag: systemTag,
+                             intensity: intensity, coverOpacity: coverOpacity, crop: crop)
+        }
+    }
+
+    /// The label-window aspect (width ÷ height) for a system's cart — GBA landscape, Game Boy square.
+    /// Cover crops are authored at this aspect so they fill the window without distortion.
+    static func labelAspect(for system: GameSystem) -> CGFloat {
+        switch system {
+        case .gba: return GBACartridgeView.labelAspect
+        case .gbc: return GBCCartridgeView.labelAspect
+        }
+    }
+
+    /// The cart silhouette's own width ÷ height — used to size the hero frame in the launch cinematic
+    /// so each console's cart keeps its true proportions (GBA wide, Game Boy portrait).
+    static func cartAspect(for system: GameSystem) -> CGFloat {
+        switch system {
+        case .gba: return 1.78
+        case .gbc: return GBCCartridgeView.cartAspect
+        }
+    }
+}
 
 /// A GBA cartridge in its authentic case form — the iOS port of the macOS `CartridgeTileView`
 /// (`emu-window/CoverView.swift`). Every proportion is the same fraction of the silhouette's
@@ -17,6 +80,13 @@ struct GBACartridgeView: View {
     var intensity: CGFloat = 1
     /// Cover-art strength: 1 focused, ~0.85 receded — matches the Mac's unselected `fraction`.
     var coverOpacity: Double = 1
+    /// Optional per-game framing of the cover within the label window. `nil`/`.full` → centered
+    /// aspect-fill; otherwise the normalized crop is applied non-destructively at display time.
+    var crop: CoverCrop? = nil
+
+    /// The label window's width:height. Any cover crop is authored at this aspect so it fills without
+    /// distortion (see `CoverCropEditor`).
+    static var labelAspect: CGFloat { (0.853 - 0.145) * 1.78 / (0.855 - 0.235) }
 
     /// Recessed areas (grip, seam, label backing) — dark, so details read against the body.
     private static let ground = Color(white: 0.09)
@@ -38,15 +108,34 @@ struct GBACartridgeView: View {
                 // Cover art sits in the label window (aspect-fill, clipped) — the same treatment
                 // as the Mac's `fillLabel`. Drawn as a real view so the crop + rounding are exact.
                 if let cover {
-                    Image(uiImage: cover)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: win.width, height: win.height)
-                        .clipShape(RoundedRectangle(cornerRadius: bw * 0.03))
+                    coverArt(cover, win: win, radius: bw * 0.03)
                         .opacity(coverOpacity)
                         .position(x: win.midX, y: win.midY)
                 }
             }
+        }
+    }
+
+    /// The cover art filling the label window. With a `crop`, scale the source so the crop rect fills
+    /// the window, offset so the crop's top-left sits at the window origin, then clip — non-destructive
+    /// (the source image is untouched). Without one, plain centered aspect-fill.
+    @ViewBuilder
+    private func coverArt(_ image: UIImage, win: CGRect, radius: CGFloat) -> some View {
+        if let crop, crop != .full, image.size.width > 0, image.size.height > 0 {
+            let iw = image.size.width, ih = image.size.height
+            let scale = win.width / (CGFloat(crop.width) * iw)
+            Image(uiImage: image)
+                .resizable()
+                .frame(width: iw * scale, height: ih * scale)
+                .offset(x: -CGFloat(crop.x) * iw * scale, y: -CGFloat(crop.y) * ih * scale)
+                .frame(width: win.width, height: win.height, alignment: .topLeading)
+                .clipShape(RoundedRectangle(cornerRadius: radius))
+        } else {
+            Image(uiImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: win.width, height: win.height)
+                .clipShape(RoundedRectangle(cornerRadius: radius))
         }
     }
 
@@ -186,4 +275,184 @@ struct GBACartridgeView: View {
         if base.count >= 2 { return String(base.prefix(2)).uppercased() }
         return base.isEmpty ? "?" : base.uppercased()
     }
+}
+
+/// A Game Boy / Game Boy Color cartridge — the iOS port of the macOS `drawGBCCartridge`. A near-square
+/// **portrait** shell (**0.90:1**) with the console's hallmarks: ribbed thumb grips tucked into the top
+/// corners, a recessed grip groove across the top, a large **square** label window for the cover, and a
+/// small ▽ insertion arrow at the foot. Same Liquid-Glass body + dark recesses as `GBACartridgeView`
+/// so the two read as one family of carts. Drawn in SwiftUI's y-down space, matching the flipped AppKit
+/// coords of the original.
+struct GBCCartridgeView: View {
+    let cover: UIImage?
+    let title: String
+    let systemTag: String
+    var intensity: CGFloat = 1
+    var coverOpacity: Double = 1
+    var crop: CoverCrop? = nil
+
+    /// Cart silhouette width ÷ height (portrait).
+    static let cartAspect: CGFloat = 0.90
+    /// The label window is square (matches `GameSystem.gbc.coverAspect`).
+    static var labelAspect: CGFloat { 1.0 }
+
+    private static let ground = Color(white: 0.09)
+
+    var body: some View {
+        GeometryReader { geo in
+            // Fit a 0.90:1 portrait body inside the frame, centered.
+            let bh = min(geo.size.height, geo.size.width / Self.cartAspect)
+            let bw = bh * Self.cartAspect
+            let box = CGRect(x: (geo.size.width - bw) / 2,
+                             y: (geo.size.height - bh) / 2,
+                             width: bw, height: bh)
+            let win = Self.labelWindow(box)
+
+            ZStack {
+                Canvas { ctx, _ in
+                    Self.drawShell(ctx, box: box, hasCover: cover != nil,
+                                   title: title, systemTag: systemTag, intensity: intensity)
+                }
+                if let cover {
+                    coverArt(cover, win: win, radius: bw * 0.03)
+                        .opacity(coverOpacity)
+                        .position(x: win.midX, y: win.midY)
+                }
+            }
+        }
+    }
+
+    /// The cover art filling the square label window — same non-destructive crop math as the GBA cart.
+    @ViewBuilder
+    private func coverArt(_ image: UIImage, win: CGRect, radius: CGFloat) -> some View {
+        if let crop, crop != .full, image.size.width > 0, image.size.height > 0 {
+            let iw = image.size.width, ih = image.size.height
+            let scale = win.width / (CGFloat(crop.width) * iw)
+            Image(uiImage: image)
+                .resizable()
+                .frame(width: iw * scale, height: ih * scale)
+                .offset(x: -CGFloat(crop.x) * iw * scale, y: -CGFloat(crop.y) * ih * scale)
+                .frame(width: win.width, height: win.height, alignment: .topLeading)
+                .clipShape(RoundedRectangle(cornerRadius: radius))
+        } else {
+            Image(uiImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: win.width, height: win.height)
+                .clipShape(RoundedRectangle(cornerRadius: radius))
+        }
+    }
+
+    // MARK: Geometry
+
+    private static func pt(_ box: CGRect, _ fx: CGFloat, _ fy: CGFloat) -> CGPoint {
+        CGPoint(x: box.minX + fx * box.width, y: box.minY + fy * box.height)
+    }
+
+    /// The square cover window, centered horizontally and set below the grip groove.
+    private static func labelWindow(_ box: CGRect) -> CGRect {
+        let side = box.width * 0.68
+        return CGRect(x: box.midX - side / 2, y: box.minY + box.height * 0.25,
+                      width: side, height: side)
+    }
+
+    // MARK: Canvas drawing
+
+    private static func drawShell(_ ctx: GraphicsContext, box: CGRect,
+                                  hasCover: Bool, title: String, systemTag: String,
+                                  intensity: CGFloat) {
+        let bw = box.width, bh = box.height
+        func F(_ fx: CGFloat, _ fy: CGFloat) -> CGPoint { pt(box, fx, fy) }
+
+        // Shell body: the same frosted glass gradient + bright rim as the GBA cart, as a rounded rect.
+        let shell = Path(roundedRect: box, cornerRadius: bw * 0.06)
+        let top = CGPoint(x: box.midX, y: box.minY)
+        let bottom = CGPoint(x: box.midX, y: box.maxY)
+        ctx.fill(shell, with: .linearGradient(
+            Gradient(stops: [
+                .init(color: Color(white: 0.28 * intensity), location: 0),
+                .init(color: Color(white: 0.10 * intensity), location: 0.55),
+                .init(color: Color(white: 0.17 * intensity), location: 1),
+            ]),
+            startPoint: top, endPoint: bottom))
+        ctx.stroke(shell, with: .linearGradient(
+            Gradient(stops: [
+                .init(color: .white.opacity(0.7 * intensity), location: 0),
+                .init(color: .white.opacity(0.08 * intensity), location: 1),
+            ]),
+            startPoint: top, endPoint: bottom),
+            lineWidth: 1.5)
+
+        // Slot keys: small dark notches cut into the top edge just inside each shoulder.
+        for nx in [CGFloat(0.05), CGFloat(0.95)] {
+            let slot = CGRect(x: F(nx, 0).x - bw * 0.007, y: box.minY,
+                              width: bw * 0.014, height: bh * 0.05)
+            ctx.fill(Path(roundedRect: slot, cornerRadius: bw * 0.006), with: .color(ground))
+        }
+
+        // Ribbed thumb grips: a few short vertical ridges tucked into each top corner.
+        var ribs = Path()
+        for base in [CGFloat(0.055), CGFloat(0.85)] {
+            for i in 0..<4 {
+                let x = box.minX + (base + CGFloat(i) * 0.030) * bw
+                ribs.move(to: CGPoint(x: x, y: box.minY + bh * 0.055))
+                ribs.addLine(to: CGPoint(x: x, y: box.minY + bh * 0.125))
+            }
+        }
+        ctx.stroke(ribs, with: .color(ground),
+                   style: StrokeStyle(lineWidth: max(1, bw * 0.010), lineCap: .round))
+
+        // Thumb groove: a recessed pill across the top center, between the two grips.
+        let grooveH = bh * 0.075
+        let groove = CGRect(x: F(0.20, 0).x, y: box.minY + bh * 0.045,
+                            width: (0.80 - 0.20) * bw, height: grooveH)
+        ctx.fill(Path(roundedRect: groove, cornerRadius: grooveH / 2), with: .color(ground))
+
+        // Blank label (only when there's no cover; otherwise the cover view covers this window).
+        if !hasCover { drawBlankLabel(ctx, box: box, title: title, systemTag: systemTag) }
+
+        // Insertion arrow: a shallow ▽ centered beneath the label.
+        var notch = Path()
+        notch.move(to: F(0.44, 0.915))
+        notch.addLine(to: F(0.56, 0.915))
+        notch.addLine(to: F(0.5, 0.955))
+        notch.closeSubpath()
+        ctx.fill(notch, with: .color(ground))
+    }
+
+    /// The default label for a Game Boy cart with no cover: a square dark ground, an inset frame, a
+    /// two-initial monogram, and the system tag — the square sibling of the GBA cart's blank label.
+    private static func drawBlankLabel(_ ctx: GraphicsContext, box: CGRect,
+                                       title: String, systemTag: String) {
+        let win = labelWindow(box)
+        ctx.fill(Path(roundedRect: win, cornerRadius: box.width * 0.03), with: .color(ground))
+
+        let frame = win.insetBy(dx: win.width * 0.07, dy: win.height * 0.07)
+        ctx.stroke(Path(roundedRect: frame, cornerRadius: box.width * 0.02),
+                   with: .color(.white.opacity(0.13)), lineWidth: 1)
+
+        let mono = cartInitials(from: title)
+        let monoSize = min(win.height * 0.38, win.width * 0.34)
+        ctx.draw(Text(mono).font(.system(size: monoSize, weight: .bold, design: .monospaced))
+            .foregroundColor(.white.opacity(0.3)),
+                 at: CGPoint(x: win.midX, y: win.midY - win.height * 0.05))
+
+        ctx.draw(Text(systemTag)
+            .font(.system(size: max(8, win.height * 0.10), weight: .semibold, design: .monospaced))
+            .foregroundColor(.white.opacity(0.28)),
+                 at: CGPoint(x: win.midX, y: frame.maxY - win.height * 0.10))
+    }
+}
+
+/// Two-letter monogram from a title (articles skipped): "Legend of Zelda" → "LZ". Shared by the cart
+/// views' blank labels.
+private func cartInitials(from title: String) -> String {
+    let stop: Set<String> = ["the", "of", "a", "an", "and", "or", "to", "in", "for", "de", "le", "la"]
+    let words = title.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+    let sig = words.filter { !stop.contains($0.lowercased()) }
+    let letters = sig.compactMap(\.first).map { String($0).uppercased() }
+    if letters.count >= 2 { return letters[0] + letters[1] }
+    let base = (sig.first ?? words.first ?? title).filter { $0.isLetter || $0.isNumber }
+    if base.count >= 2 { return String(base.prefix(2)).uppercased() }
+    return base.isEmpty ? "?" : base.uppercased()
 }

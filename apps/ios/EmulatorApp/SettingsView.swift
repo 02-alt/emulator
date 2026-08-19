@@ -6,6 +6,8 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
+    @State private var showAbout = false
+
     @AppStorage(SettingsKey.masterVolume) private var masterVolume = SettingsDefault.masterVolume
     @AppStorage(SettingsKey.defaultFilter) private var defaultFilter = SettingsDefault.defaultFilter
     @AppStorage(SettingsKey.lcdBacklit) private var lcdBacklit = SettingsDefault.lcdBacklit
@@ -20,6 +22,11 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.ambientVolume) private var ambientVolume = SettingsDefault.ambientVolume
     @AppStorage(SettingsKey.controlScale) private var controlScale = SettingsDefault.controlScale
     @AppStorage(SettingsKey.controlOpacity) private var controlOpacity = SettingsDefault.controlOpacity
+
+    // RetroAchievements login. These keys match LibraryKit's `RACredentials` (which reads the same
+    // UserDefaults keys), so signing in here lights up trophies in each game's details sheet.
+    @AppStorage("ra.username") private var raUsername = ""
+    @AppStorage("ra.apiKey") private var raApiKey = ""
 
     var body: some View {
         NavigationStack {
@@ -88,27 +95,35 @@ struct SettingsView: View {
                     Toggle("Auto-Resume on Launch", isOn: $autoResume).tint(.green)
                 }
 
-                Section("About") {
-                    LabeledContent("Version", value: appVersion)
-                    LabeledContent("Core", value: ContinuityService.coreVersion)
-                    LabeledContent("System", value: "Game Boy Advance")
+                Section {
+                    TextField("Username", text: $raUsername)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    SecureField("Web API Key", text: $raApiKey)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                } header: {
+                    Text("RetroAchievements")
+                } footer: {
+                    Text("Sign in with your RetroAchievements username and Web API key (from Settings → Keys on retroachievements.org) to see trophies and story progress for each game.")
                 }
+
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showAbout = true } label: { Image(systemName: "info.circle") }
+                        .accessibilityLabel("About")
+                }
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+            }
+            .sheet(isPresented: $showAbout) {
+                NavigationStack { AboutView() }
+                    .preferredColorScheme(.dark)
             }
             // Keep the ambience in sync as the scene/volume change.
             .onChange(of: ambientScene) { _, _ in AmbientPlayer.shared.apply() }
             .onChange(of: ambientVolume) { _, _ in AmbientPlayer.shared.apply() }
         }
         .preferredColorScheme(.dark)
-    }
-
-    private var appVersion: String {
-        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-        let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
-        return "\(v) (\(b))"
     }
 }

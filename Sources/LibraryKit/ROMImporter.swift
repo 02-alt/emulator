@@ -2,8 +2,9 @@ import Foundation
 
 /// Turns a ROM file on disk into a `Game`: hashes it for identity and derives a clean title.
 public enum ROMImporter {
-    /// GBA cartridges.
-    public static let supportedExtensions: Set<String> = ["gba"]
+    /// Every ROM extension we can import, across all supported systems (GBA, Game Boy / Color).
+    public static let supportedExtensions: Set<String> =
+        Set(GameSystem.allCases.flatMap { $0.fileExtensions })
 
     public static func isSupported(_ url: URL) -> Bool {
         supportedExtensions.contains(url.pathExtension.lowercased())
