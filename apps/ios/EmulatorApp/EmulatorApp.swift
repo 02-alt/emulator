@@ -67,14 +67,6 @@ struct EmulatorApp: App {
             }
             .task {
                 AmbientPlayer.shared.apply()   // start the chosen soundscape (no-op if Off)
-                // Diagnostic seam: EMU_DIAG_SEND attempts a real cross-device send on launch and logs
-                // exactly why it fails (whether iCloud is usable at all, then any CloudKit error).
-                if ProcessInfo.processInfo.environment["EMU_DIAG_SEND"] != nil, let g = library.games.first {
-                    let signedIn = FileManager.default.ubiquityIdentityToken != nil
-                    NSLog("[Encore] diag: cloudKitUsable=\(ContinuityService.cloudKitUsable) iCloudSignedIn=\(signedIn) container=\(ContinuityService.cloudContainer)")
-                    let ok = await continuity.offerROM(game: g)
-                    NSLog("[Encore] diag: offerROM returned \(ok) for \(g.displayTitle)")
-                }
                 // Automation seam: EMU_PREVIEW_BANNER pops a sample trophy banner on launch, so the
                 // in-app notification can be demonstrated on-device where taps can't be scripted.
                 if ProcessInfo.processInfo.environment["EMU_PREVIEW_BANNER"] != nil {

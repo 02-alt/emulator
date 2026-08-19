@@ -16,8 +16,29 @@ final class LibraryModel {
     private(set) var covers: [String: URL] = [:]
 
     init() {
+        reanchorROMPaths()   // repair paths left stale by an app-container UUID change (see below)
         importFromDocuments()
         reload()
+    }
+
+    /// Repair stale ROM paths. A `Game.romPath` is saved as an absolute path, and on iOS the Data
+    /// container's UUID changes when the app is reinstalled — so a path saved by a previous install
+    /// (`…/Application/<oldUUID>/…/roms/Game.gba`) no longer resolves, even though the ROM file itself
+    /// persists in the *current* container's romsDir. Re-anchor each game to the current romsDir by
+    /// filename so the ROM is always found (fixes Send/Continue/play silently failing after a reinstall).
+    private func reanchorROMPaths() {
+        let romsDir = AppPaths.romsDir
+        var changed = false
+        for game in store.games {
+            let current = romsDir.appendingPathComponent(game.romURL.lastPathComponent).path
+            guard game.romPath != current,
+                  FileManager.default.fileExists(atPath: current) else { continue }
+            var g = game
+            g.romPath = current
+            store.update(g)
+            changed = true
+        }
+        if changed { store.save() }
     }
 
     /// Auto-import any `.gba` sitting in the app's Documents directory (where Files shows the app
