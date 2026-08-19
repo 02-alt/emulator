@@ -20,7 +20,7 @@ final class ContinuityService {
     static let coreVersion = MGBACore.coreVersion
 
     /// The app's CloudKit container (must match the iCloud entitlement in EmulatorApp.entitlements).
-    static let cloudContainer = "iCloud.com.buildtoberemembered.encore"
+    static let cloudContainer = "iCloud.com.comalada.gbaemulator"
 
     /// Whether it's safe to construct the CloudKit store. `CKContainer(identifier:)` *traps* (an
     /// uncatchable SIGTRAP) when the container isn't provisioned in the signed app — which is always
@@ -176,6 +176,7 @@ final class ContinuityService {
                 romHash: game.romHash, fileName: fileName, coverPNG: coverPNG, data: data, targetDevice: targetDevice)
             return true
         } catch {
+            NSLog("[Encore] Send failed — cloudKitUsable=\(Self.cloudKitUsable) error=\(error)")
             return false
         }
     }
