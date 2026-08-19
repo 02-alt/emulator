@@ -15,6 +15,7 @@ struct EmulatorApp: App {
     @State private var launcher = LaunchCoordinator()
 
     @State private var path: [PlayRequest] = []
+    @State private var whatsNew: ReleaseNote?
 
     init() {
         CrashReporter.install()   // capture crashes to Application Support/Emulator/crashes before any UI
@@ -50,14 +51,30 @@ struct EmulatorApp: App {
                         .ignoresSafeArea()
                         .zIndex(1)
                 }
+
+                // In-app notification banners (trophy unlocks, etc.) ride above everything, including
+                // the launch cinematic, and never intercept touches to the game or shelf beneath.
+                NotificationBannerHost()
+                    .zIndex(2)
             }
             .environment(library)
             .environment(continuity)
             .environment(launcher)
             .preferredColorScheme(.dark)
             .tint(.white)
+            .sheet(item: $whatsNew) { note in
+                WhatsNewView(note: note)
+            }
             .task {
                 AmbientPlayer.shared.apply()   // start the chosen soundscape (no-op if Off)
+                // Automation seam: EMU_PREVIEW_BANNER pops a sample trophy banner on launch, so the
+                // in-app notification can be demonstrated on-device where taps can't be scripted.
+                if ProcessInfo.processInfo.environment["EMU_PREVIEW_BANNER"] != nil {
+                    Task {
+                        try? await Task.sleep(for: .seconds(1.0))
+                        AppNotifier.shared.post(.trophy(title: "Nice! Got the hang of it", points: 5))
+                    }
+                }
                 // Automation seam: EMU_AUTOPLAY opens the first game on launch (used to drive the
                 // play screen from the simulator, where taps can't be scripted). No-op otherwise.
                 if ProcessInfo.processInfo.environment["EMU_AUTOPLAY"] != nil,
@@ -73,6 +90,9 @@ struct EmulatorApp: App {
                         path = [PlayRequest(game: game, resume: true)]
                     }
                 }
+                // What's New: on the first launch after an update, present the release's notes — but
+                // only when we're landing on the library, not jumping straight into a game.
+                if path.isEmpty { whatsNew = WhatsNew.pending() }
             }
         }
     }

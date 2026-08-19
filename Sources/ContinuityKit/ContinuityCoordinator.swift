@@ -102,12 +102,35 @@ public actor ContinuityCoordinator {
     /// Offer a game's ROM so another of the user's devices that lacks it can receive and import it.
     /// `coverPNG` is the sender's cached box art (optional) so the receiver shows matching art.
     public func publishROM(romHash: String, fileName: String, coverPNG: Data?, data: Data) async throws {
-        try await store.publishROM(romHash: romHash, fileName: fileName, coverPNG: coverPNG, data: data)
+        try await publishROM(romHash: romHash, fileName: fileName, coverPNG: coverPNG, data: data, targetDevice: nil)
     }
 
-    /// The offered ROM's filename for this game, or nil if no transfer is available. Cheap.
+    /// Offer a ROM addressed to one device by name (`targetDevice`), or broadcast to all when nil.
+    public func publishROM(romHash: String, fileName: String, coverPNG: Data?, data: Data, targetDevice: String?) async throws {
+        try await store.publishROM(romHash: romHash, fileName: fileName, coverPNG: coverPNG, data: data, targetDevice: targetDevice)
+    }
+
+    /// The offered ROM's filename for this game, or nil if no transfer is available *to this device*.
+    /// A targeted offer is visible only to its addressee; broadcast offers are visible to everyone.
     public func romOffer(forRomHash romHash: String) async throws -> String? {
-        try await store.fetchROMInfo(romHash: romHash)
+        guard let name = try await store.fetchROMInfo(romHash: romHash) else { return nil }
+        if let target = try await store.fetchROMTarget(romHash: romHash), target != deviceName {
+            return nil
+        }
+        return name
+    }
+
+    /// Distinct device names that have published a session, excluding this device — the addressable
+    /// targets for a "Send to →" menu, newest-active first. Derived from existing cards, so targeting
+    /// needs no separate presence registry.
+    public func otherDeviceNames() async throws -> [String] {
+        let cards = try await store.allCards().sorted { $0.metadata.timestamp > $1.metadata.timestamp }
+        var seen = Set<String>()
+        var names: [String] = []
+        for name in cards.map(\.metadata.deviceName) where name != deviceName && seen.insert(name).inserted {
+            names.append(name)
+        }
+        return names
     }
 
     /// Download the offered ROM bytes, or nil if none.

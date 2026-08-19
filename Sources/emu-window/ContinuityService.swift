@@ -109,13 +109,36 @@ final class ContinuityService {
     /// opted in. Called from the immediate publish path (returning to library / quit), not the debounced
     /// one, so the multi-MB upload happens on terminal moments rather than during play. No-op otherwise.
     func offerROMIfEnabled(game: Game) async {
-        guard Self.transferEnabled, let coordinator else { return }
-        guard let data = try? Data(contentsOf: game.romURL) else { return }
+        guard Self.transferEnabled else { return }
+        await offerROM(game: game)
+    }
+
+    /// Actively offer a game's ROM to the user's other devices now — backs the "Send to My Devices"
+    /// right-click. `targetDevice` addresses one device by name (from ``otherDeviceNames()``); nil
+    /// broadcasts. Ungated (the caller handles ownership consent); returns whether the offer reached
+    /// iCloud (false when iCloud is unavailable or the ROM can't be read).
+    @discardableResult
+    func offerROM(game: Game, targetDevice: String? = nil) async -> Bool {
+        guard let coordinator else { return false }
+        guard let data = try? Data(contentsOf: game.romURL) else { return false }
         let fileName = game.romURL.lastPathComponent
         // Ship our cached box art so the receiver shows the exact same cover (ROMs stored under a
         // content-hash filename won't re-match the thumbnail repo on the other device).
         let coverPNG = CoverArtService().cachedCoverURL(hash: game.romHash).flatMap { try? Data(contentsOf: $0) }
-        try? await coordinator.publishROM(romHash: game.romHash, fileName: fileName, coverPNG: coverPNG, data: data)
+        do {
+            try await coordinator.publishROM(
+                romHash: game.romHash, fileName: fileName, coverPNG: coverPNG, data: data, targetDevice: targetDevice)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// The user's other devices (by name) that can be a send target — those that have published a
+    /// session. Empty until another device shows up, in which case "Send" is a plain broadcast.
+    func otherDeviceNames() async -> [String] {
+        guard let coordinator else { return [] }
+        return (try? await coordinator.otherDeviceNames()) ?? []
     }
 
     /// The newest session for a game this Mac doesn't own but whose source device has offered the ROM.

@@ -42,6 +42,7 @@ public struct CloudKitContinuityStore: ContinuityStore {
         static let fileName = "fileName"     // ROM record: original filename
         static let rom = "rom"               // ROM record: CKAsset — the heavy ROM
         static let cover = "cover"           // ROM record: CKAsset — box art (small, optional)
+        static let targetDevice = "targetDevice"   // ROM record: addressee deviceName, or absent = broadcast
     }
 
     /// Keys sufficient to build a ``ContinuityCard`` — deliberately omits `state`.
@@ -174,6 +175,10 @@ public struct CloudKitContinuityStore: ContinuityStore {
     }
 
     public func publishROM(romHash: String, fileName: String, coverPNG: Data?, data: Data) async throws {
+        try await publishROM(romHash: romHash, fileName: fileName, coverPNG: coverPNG, data: data, targetDevice: nil)
+    }
+
+    public func publishROM(romHash: String, fileName: String, coverPNG: Data?, data: Data, targetDevice: String?) async throws {
         let recordID = romRecordID(romHash)
         let record: CKRecord
         do {
@@ -184,6 +189,7 @@ public struct CloudKitContinuityStore: ContinuityStore {
             throw mapAccountError(error)
         }
         record[Field.fileName] = fileName as CKRecordValue
+        record[Field.targetDevice] = targetDevice as CKRecordValue?   // nil = broadcast
 
         let scratch = try makeScratchDirectory()
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -227,6 +233,20 @@ public struct CloudKitContinuityStore: ContinuityStore {
             guard let result = results[recordID] else { return nil }
             let record = try result.get()
             return record[Field.fileName] as? String
+        } catch let error as CKError where error.code == .unknownItem {
+            return nil
+        } catch {
+            throw mapAccountError(error)
+        }
+    }
+
+    public func fetchROMTarget(romHash: String) async throws -> String? {
+        let recordID = romRecordID(romHash)
+        do {
+            let results = try await database.records(
+                for: [recordID], desiredKeys: [Field.targetDevice])
+            guard let result = results[recordID] else { return nil }
+            return try result.get()[Field.targetDevice] as? String
         } catch let error as CKError where error.code == .unknownItem {
             return nil
         } catch {

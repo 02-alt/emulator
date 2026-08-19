@@ -66,6 +66,10 @@ actor LocalContinuityStore: ContinuityStore {
     // Layout: <romHash>/rom.bin (bytes) + rom-name.txt (original filename) + cover.png (optional art).
 
     func publishROM(romHash: String, fileName: String, coverPNG: Data?, data: Data) async throws {
+        try await publishROM(romHash: romHash, fileName: fileName, coverPNG: coverPNG, data: data, targetDevice: nil)
+    }
+
+    func publishROM(romHash: String, fileName: String, coverPNG: Data?, data: Data, targetDevice: String?) async throws {
         let dir = dir(romHash)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try data.write(to: dir.appendingPathComponent("rom.bin"), options: .atomic)
@@ -76,6 +80,18 @@ actor LocalContinuityStore: ContinuityStore {
         } else {
             try? FileManager.default.removeItem(at: coverURL)
         }
+        let targetURL = dir.appendingPathComponent("rom-target.txt")
+        if let targetDevice {
+            try Data(targetDevice.utf8).write(to: targetURL, options: .atomic)
+        } else {
+            try? FileManager.default.removeItem(at: targetURL)
+        }
+    }
+
+    func fetchROMTarget(romHash: String) async throws -> String? {
+        guard let data = try? Data(contentsOf: dir(romHash).appendingPathComponent("rom-target.txt"))
+        else { return nil }
+        return String(decoding: data, as: UTF8.self)
     }
 
     func fetchROMInfo(romHash: String) async throws -> String? {
@@ -96,5 +112,6 @@ actor LocalContinuityStore: ContinuityStore {
         try? FileManager.default.removeItem(at: dir(romHash).appendingPathComponent("rom.bin"))
         try? FileManager.default.removeItem(at: dir(romHash).appendingPathComponent("rom-name.txt"))
         try? FileManager.default.removeItem(at: dir(romHash).appendingPathComponent("cover.png"))
+        try? FileManager.default.removeItem(at: dir(romHash).appendingPathComponent("rom-target.txt"))
     }
 }

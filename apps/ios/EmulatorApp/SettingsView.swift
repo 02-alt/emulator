@@ -23,6 +23,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.ambientVolume) private var ambientVolume = SettingsDefault.ambientVolume
     @AppStorage(SettingsKey.controlScale) private var controlScale = SettingsDefault.controlScale
     @AppStorage(SettingsKey.controlOpacity) private var controlOpacity = SettingsDefault.controlOpacity
+    @AppStorage(SettingsKey.trophyNotifications) private var trophyNotifications = SettingsDefault.trophyNotifications
 
     // RetroAchievements login. These keys match LibraryKit's `RACredentials` (which reads the same
     // UserDefaults keys), so signing in here lights up trophies in each game's details sheet.
@@ -105,6 +106,24 @@ struct SettingsView: View {
                         + "Encore copies it over through your own private iCloud — never our servers — and "
                         + "deletes the copy the moment your other device receives it. Only turn this on for "
                         + "games you legally own. We don’t condone piracy.")
+                }
+
+                Section {
+                    Toggle("Trophy Banners", isOn: $trophyNotifications).tint(.green)
+                    Button("Preview Banner") {
+                        // The banner host lives at the app root, behind this sheet — dismiss to the
+                        // library so the preview is actually visible, then post it.
+                        dismiss()
+                        Task {
+                            try? await Task.sleep(for: .seconds(0.5))
+                            AppNotifier.shared.post(
+                                .trophy(title: "Nice! Got the hang of it", points: 5))
+                        }
+                    }
+                } header: {
+                    Text("Notifications")
+                } footer: {
+                    Text("A subtle banner slides in when you unlock a RetroAchievement while playing.")
                 }
 
                 Section {

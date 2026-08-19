@@ -67,8 +67,23 @@ final class ContinuityService {
 
     private let coordinator: ContinuityCoordinator
 
-    /// The newest resumable session across the library, or nil. Drives the Continue banner.
+    /// The newest resumable session across the library, or nil. Drives auto-resume and is the head
+    /// of `recentSessions`.
     private(set) var banner: ContinuityCard?
+
+    /// The most recent resumable sessions across the whole library, newest first, cross-device merged
+    /// (a session from another device wins when iCloud has fresher data). Drives the "Continue Playing"
+    /// strip so a game paused on the phone *and* one paused on the Mac are both one tap away.
+    private(set) var recentSessions: [ContinuityCard] = []
+
+    /// How many sessions the Continue strip shows before it stops growing.
+    private static let recentLimit = 8
+
+    /// A label for where a session was last played, or nil when it was this very device — used to tag
+    /// a cross-device card ("MacBook Pro · 5m ago") so you know which hardware you're resuming from.
+    func sourceLabel(for card: ContinuityCard) -> String? {
+        card.metadata.deviceName == UIDevice.current.name ? nil : card.metadata.deviceName
+    }
 
     init() {
         // Local + iCloud mirror where iCloud is usable, else local-only. We gate on the iCloud
@@ -99,7 +114,12 @@ final class ContinuityService {
             romHash: game.romHash, romTitle: game.displayTitle, secondsPlayed: secondsPlayed)
         try? await coordinator.publish(
             ContinuitySnapshot(metadata: metadata, state: state, thumbnailPNG: thumbnailPNG))
-        banner = ContinuityCard(metadata: metadata, thumbnailPNG: thumbnailPNG)
+        let card = ContinuityCard(metadata: metadata, thumbnailPNG: thumbnailPNG)
+        banner = card
+        // Float this game to the head of the strip immediately, without waiting on a re-fetch.
+        recentSessions.removeAll { $0.metadata.romHash == card.metadata.romHash }
+        recentSessions.insert(card, at: 0)
+        recentSessions = Array(recentSessions.prefix(Self.recentLimit))
     }
 
     /// The savestate to resume a game, honoring the core-version gate. Nil if none / incompatible.
@@ -107,21 +127,24 @@ final class ContinuityService {
         try? await coordinator.resumeState(forRomHash: romHash)
     }
 
-    /// Recompute the banner: the most recent card among the library's games.
+    /// Recompute the Continue strip: every resumable card among the library's games, newest first
+    /// (cross-device merged by the store). `banner` is the head of that list.
     func refreshBanner(for games: [Game]) async {
-        var newest: ContinuityCard?
+        var cards: [ContinuityCard] = []
         for game in games {
-            if let card = try? await coordinator.card(forRomHash: game.romHash),
-               newest == nil || card.metadata.timestamp > newest!.metadata.timestamp {
-                newest = card
+            if let card = try? await coordinator.card(forRomHash: game.romHash) {
+                cards.append(card)
             }
         }
-        banner = newest
+        cards.sort { $0.metadata.timestamp > $1.metadata.timestamp }
+        recentSessions = Array(cards.prefix(Self.recentLimit))
+        banner = cards.first
     }
 
     func clear(romHash: String) async {
         try? await coordinator.clear(romHash: romHash)
-        if banner?.metadata.romHash == romHash { banner = nil }
+        recentSessions.removeAll { $0.metadata.romHash == romHash }
+        if banner?.metadata.romHash == romHash { banner = recentSessions.first }
     }
 
     // MARK: - ROM transfer (opt-in, ephemeral)
@@ -135,12 +158,32 @@ final class ContinuityService {
     /// when the user opted in. Called from the publish path (a terminal moment). No-op otherwise.
     func offerROMIfEnabled(game: Game) async {
         guard AppSettings.transferEnabled else { return }
-        guard let data = try? Data(contentsOf: game.romURL) else { return }
+        await offerROM(game: game)
+    }
+
+    /// Actively offer a game's ROM to the user's other devices now — the "Send to My Devices" gesture.
+    /// `targetDevice` addresses one device by name (from ``sendTargets()``); nil broadcasts to all.
+    /// Ungated (the caller is responsible for consent/ownership); returns whether the offer was made.
+    @discardableResult
+    func offerROM(game: Game, targetDevice: String? = nil) async -> Bool {
+        guard let data = try? Data(contentsOf: game.romURL) else { return false }
         let fileName = game.romURL.lastPathComponent
         // Include our cached box art so the receiver shows matching cover without re-matching a
         // (possibly cleaned/region-less) title against the thumbnail repo.
         let coverPNG = try? Data(contentsOf: AppPaths.coversDir.appendingPathComponent("\(game.romHash).png"))
-        try? await coordinator.publishROM(romHash: game.romHash, fileName: fileName, coverPNG: coverPNG, data: data)
+        do {
+            try await coordinator.publishROM(
+                romHash: game.romHash, fileName: fileName, coverPNG: coverPNG, data: data, targetDevice: targetDevice)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// The user's other devices (by name) that can be a send target — those that have published a
+    /// session. Empty until another device shows up, in which case "Send" is a plain broadcast.
+    func sendTargets() async -> [String] {
+        (try? await coordinator.otherDeviceNames()) ?? []
     }
 
     /// Recompute `transferOffer`: the newest session for a game NOT in `games` that has a ROM offer,

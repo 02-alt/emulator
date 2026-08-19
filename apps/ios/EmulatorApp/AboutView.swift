@@ -29,6 +29,11 @@ struct AboutView: View {
                 LabeledContent("Version", value: appVersion)
                 LabeledContent("Core", value: ContinuityService.coreVersion)
                 LabeledContent("System", value: "Game Boy Advance")
+                NavigationLink {
+                    ReleaseNotesView()
+                } label: {
+                    Label("Release Notes", systemImage: "sparkles")
+                }
             }
 
             Section {

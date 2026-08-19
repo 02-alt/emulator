@@ -15,6 +15,11 @@ final class CartridgeTileView: NSView {
     var onReveal: (() -> Void)?
     var onContextRemove: (() -> Void)?
     var onContextSettings: (() -> Void)?
+    /// (targetDevice) — nil means broadcast to all the user's devices.
+    var onContextSendTo: ((String?) -> Void)?
+    /// The user's other devices, read lazily when the right-click menu opens (sync), so "Send to →"
+    /// can list them. Empty → a plain broadcast "Send to My Devices".
+    var sendTargets: () -> [String] = { [] }
 
     /// Drag-to-scrub, forwarded to the carousel: a press that moves becomes a horizontal drag; a
     /// press that doesn't is a plain click (select/launch).
@@ -162,14 +167,20 @@ final class CartridgeTileView: NSView {
         let pointSize: CGFloat = 15
         menu.font = .menuFont(ofSize: pointSize)
         let symbolCfg = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
-        func add(_ title: String, symbol: String, _ selector: Selector) {
-            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
-            item.target = self
+        func icon(_ symbol: String) -> NSImage? {
             let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
                 .withSymbolConfiguration(symbolCfg)
             image?.isTemplate = true   // adopt the menu's text colour (incl. highlighted state)
-            item.image = image
-            menu.addItem(item)
+            return image
+        }
+        func item(_ title: String, symbol: String, _ selector: Selector) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+            item.target = self
+            item.image = icon(symbol)
+            return item
+        }
+        func add(_ title: String, symbol: String, _ selector: Selector) {
+            menu.addItem(item(title, symbol: symbol, selector))
         }
 
         add("Play", symbol: "play.fill", #selector(contextPlay))
@@ -182,6 +193,30 @@ final class CartridgeTileView: NSView {
         menu.addItem(.separator())
         add("Show ROM in Finder", symbol: "folder", #selector(contextReveal))
         menu.addItem(.separator())
+
+        // Send: a plain broadcast item, or — once the user has other devices with sessions — a
+        // "Send to →" submenu that addresses one device (plus an "All My Devices" broadcast).
+        let targets = sendTargets()
+        if targets.isEmpty {
+            add("Send to My Devices", symbol: "iphone.and.arrow.forward", #selector(contextSendBroadcast))
+        } else {
+            let sendItem = item("Send to…", symbol: "iphone.and.arrow.forward", #selector(contextSendBroadcast))
+            sendItem.action = nil   // parent of a submenu isn't itself clickable
+            let submenu = NSMenu()
+            submenu.font = .menuFont(ofSize: pointSize)
+            for device in targets {
+                let deviceItem = NSMenuItem(title: device, action: #selector(contextSendToDevice(_:)), keyEquivalent: "")
+                deviceItem.target = self
+                deviceItem.image = icon("laptopcomputer.and.iphone")
+                deviceItem.representedObject = device
+                submenu.addItem(deviceItem)
+            }
+            submenu.addItem(.separator())
+            submenu.addItem(item("All My Devices", symbol: "square.stack.3d.up", #selector(contextSendBroadcast)))
+            sendItem.submenu = submenu
+            menu.addItem(sendItem)
+        }
+        menu.addItem(.separator())
         add("Remove from Library", symbol: "trash", #selector(contextRemove))
         return menu
     }
@@ -191,6 +226,8 @@ final class CartridgeTileView: NSView {
     @objc private func contextReveal() { onReveal?() }
     @objc private func contextRemove() { onContextRemove?() }
     @objc private func contextSettings() { onContextSettings?() }
+    @objc private func contextSendBroadcast() { onContextSendTo?(nil) }
+    @objc private func contextSendToDevice(_ sender: NSMenuItem) { onContextSendTo?(sender.representedObject as? String) }
 
     // MARK: - Hover
 

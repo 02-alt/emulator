@@ -63,4 +63,28 @@ public protocol ContinuityStore: Sendable {
     /// Delete the ROM offer (bytes + filename). Called by the receiver right after import so the
     /// copy is ephemeral, or by the sender to withdraw an offer.
     func clearROM(romHash: String) async throws
+
+    // MARK: Targeted transfer (optional)
+    //
+    // A send can be addressed to one specific device (by its `deviceName`) instead of broadcast to
+    // all of them. Additive: stores that don't override the two members below fall back to broadcast,
+    // so the existing (untargeted) path is unaffected.
+
+    /// Offer a ROM addressed to a specific device by name; `targetDevice: nil` broadcasts to every
+    /// device (the historical behaviour). Idempotent per `romHash`.
+    func publishROM(romHash: String, fileName: String, coverPNG: Data?, data: Data, targetDevice: String?) async throws
+
+    /// The device a ROM offer is addressed to, or nil for a broadcast offer / when no offer exists.
+    func fetchROMTarget(romHash: String) async throws -> String?
+}
+
+public extension ContinuityStore {
+    /// Default: ignore the target and broadcast — keeps stores that predate targeting compiling and
+    /// behaving exactly as before.
+    func publishROM(romHash: String, fileName: String, coverPNG: Data?, data: Data, targetDevice: String?) async throws {
+        try await publishROM(romHash: romHash, fileName: fileName, coverPNG: coverPNG, data: data)
+    }
+
+    /// Default: offers are broadcast (no addressee).
+    func fetchROMTarget(romHash: String) async throws -> String? { nil }
 }

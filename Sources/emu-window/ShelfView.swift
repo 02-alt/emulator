@@ -15,7 +15,12 @@ final class LibraryDashboardView: NSView {
     var onToggleFavorite: ((Game) -> Void)?
     var onToggleHidden: ((Game) -> Void)?
     var onReveal: ((Game) -> Void)?
+    /// (game, targetDevice) — targetDevice nil means broadcast to all the user's devices.
+    var onContextSend: ((Game, String?) -> Void)?
     var onDropURLs: (([URL]) -> Void)?
+    /// The user's other devices, cached by the controller and read when a tile's right-click menu
+    /// opens, so "Send to →" can list them without an async hop mid-menu.
+    var sendTargets: [String] = []
 
     var onConfigure: (() -> Void)?    // opens Settings (not per-game)
     var onAddROMs: (() -> Void)?
@@ -266,6 +271,8 @@ final class LibraryDashboardView: NSView {
             t.onReveal = { [weak self] in self?.onReveal?(game) }
             t.onContextRemove = { [weak self] in self?.onRemove?(game) }
             t.onContextSettings = { [weak self] in self?.onGameSettings?(game) }
+            t.onContextSendTo = { [weak self] target in self?.onContextSend?(game, target) }
+            t.sendTargets = { [weak self] in self?.sendTargets ?? [] }
             t.onCarouselDrag = { [weak self] phase, dx in self?.handleCarouselDrag(phase, dx) }
             addSubview(t)
             return t

@@ -135,6 +135,7 @@ final class LibraryWindowController: NSObject {
         dashboard.onToggleFavorite = { [weak self] in self?.toggleFavorite($0) }
         dashboard.onToggleHidden = { [weak self] in self?.toggleHidden($0) }
         dashboard.onReveal = { [weak self] in self?.revealROM($0) }
+        dashboard.onContextSend = { [weak self] game, target in self?.sendToDevices(game, target: target) }
         dashboard.onDropURLs = { [weak self] in self?.importURLs($0) }
         dashboard.onAddROMs = { [weak self] in self?.addGames() }
         dashboard.onConfigure = { [weak self] in self?.showSettings() }
@@ -189,6 +190,8 @@ final class LibraryWindowController: NSObject {
         let games = store.games
         Task { [weak self] in
             guard let self else { return }
+            // Cache the addressable devices so a tile's right-click "Send to →" can list them synchronously.
+            dashboard.sendTargets = await continuity.otherDeviceNames()
             if let hit = await continuity.newestResumable(in: games) {
                 dashboard.crossDeviceContinue = (
                     game: hit.game,
@@ -281,6 +284,44 @@ final class LibraryWindowController: NSObject {
             await continuity.clear(romHash: hit.game.romHash)
             dashboard.crossDeviceContinue = nil
             launch(hit.game, resumeState: state)
+        }
+    }
+
+    /// "Send to My Devices" (right-click): actively offer this game to the user's other devices through
+    /// iCloud so it appears in their Continue shelf. Gated by the same ownership consent as the Handoff
+    /// transfer setting — if that's off we ask once (and remember the choice), then send.
+    private func sendToDevices(_ game: Game, target: String?) {
+        guard ContinuityService.transferEnabled else {
+            let send = AppAlert.Action(title: "Send", isDefault: true) { [weak self] in
+                ContinuityService.transferEnabled = true
+                self?.performSend(game, target: target)
+            }
+            let cancel = AppAlert.Action(title: "Cancel", isCancel: true)
+            let shown = AppAlert.present(
+                in: window,
+                symbol: "iphone.and.arrow.forward",
+                title: "Send to your devices?",
+                message: "This copies the game to your other devices through your own private iCloud — "
+                    + "never our servers — so you can pick it up there. Only send games you legally own.",
+                actions: [cancel, send])
+            if !shown {   // no window to host the themed alert — just proceed
+                ContinuityService.transferEnabled = true
+                performSend(game, target: target)
+            }
+            return
+        }
+        performSend(game, target: target)
+    }
+
+    private func performSend(_ game: Game, target: String?) {
+        Task { [weak self] in
+            guard let self else { return }
+            let ok = await continuity.offerROM(game: game, targetDevice: target)
+            let dest = target ?? "your devices"
+            Toast.show(in: window,
+                       ok ? "\(game.displayTitle) — sent to \(dest)"
+                          : "Couldn’t send — iCloud isn’t available right now.",
+                       style: ok ? .info : .error)
         }
     }
 

@@ -53,6 +53,7 @@ enum SettingsKey {
     static let controlScale = "settings.controlScale"
     static let controlOpacity = "settings.controlOpacity"
     static let transferEnabled = "continuity.transferEnabled"
+    static let trophyNotifications = "settings.trophyNotifications"
 }
 
 enum SettingsDefault {
@@ -71,6 +72,7 @@ enum SettingsDefault {
     static let controlScale = 1.0
     static let controlOpacity = 1.0
     static let transferEnabled = false   // off: never copy game files between devices (see About ▸ Handoff)
+    static let trophyNotifications = true   // show an in-app banner when a RetroAchievement unlocks
 }
 
 /// Read-side of the global settings for non-UI code (launch-time reads).
@@ -92,4 +94,9 @@ enum AppSettings {
     static var ambientVolume: Double { d.object(forKey: SettingsKey.ambientVolume) as? Double ?? SettingsDefault.ambientVolume }
     static var controlScale: Double { d.object(forKey: SettingsKey.controlScale) as? Double ?? SettingsDefault.controlScale }
     static var controlOpacity: Double { d.object(forKey: SettingsKey.controlOpacity) as? Double ?? SettingsDefault.controlOpacity }
+    static var trophyNotifications: Bool { d.object(forKey: SettingsKey.trophyNotifications) as? Bool ?? SettingsDefault.trophyNotifications }
+
+    /// Persist the Handoff transfer opt-in — written when the user consents to the first "Send to My
+    /// Devices", so the Settings toggle reflects it and future sends skip the prompt.
+    static func setTransferEnabled(_ on: Bool) { d.set(on, forKey: SettingsKey.transferEnabled) }
 }

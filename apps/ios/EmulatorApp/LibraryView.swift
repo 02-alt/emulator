@@ -22,6 +22,12 @@ struct LibraryView: View {
     @State private var showSearch = false
     @State private var arrival: ArrivalInfo?
     @State private var focusedCartFrame: CGRect?
+    /// Set when the user taps "Send to My Devices" while game transfer is still off — drives the
+    /// one-time consent alert before the first send. `target` is the chosen device (nil = broadcast).
+    @State private var sendConsent: (game: Game, target: String?)?
+    /// The user's other devices, so the context menu can offer "Send to → [device]". Empty → a plain
+    /// broadcast "Send to My Devices".
+    @State private var sendTargets: [String] = []
 
     /// A just-received transfer, driving the NameDrop-style arrival animation.
     struct ArrivalInfo: Identifiable {
@@ -86,12 +92,24 @@ struct LibraryView: View {
         .alert("Import failed", isPresented: .constant(importError != nil)) {
             Button("OK") { importError = nil }
         } message: { Text(importError ?? "") }
+        .alert("Send to your devices?", isPresented: .constant(sendConsent != nil), presenting: sendConsent) { pending in
+            Button("Send") {
+                AppSettings.setTransferEnabled(true)   // remember the choice, like the Settings toggle
+                sendConsent = nil
+                Task { await sendToDevices(pending.game, target: pending.target) }
+            }
+            Button("Cancel", role: .cancel) { sendConsent = nil }
+        } message: { _ in
+            Text("This copies the game to your other devices through your own private iCloud — never our "
+                + "servers — so you can pick it up there. Only send games you legally own.")
+        }
         .sheet(item: $settingsGame) { GameSettingsView(game: $0) }
         .sheet(item: $detailsGame) { GameDetailsSheet(game: $0) }
         .sheet(isPresented: $showSettings) { SettingsView() }
         .task(id: library.games.count) {
             await continuity.refreshBanner(for: library.games)
             await continuity.refreshTransferOffer(for: library.games)
+            sendTargets = await continuity.sendTargets()
         }
         .onAppear {
             Task {
@@ -126,8 +144,10 @@ struct LibraryView: View {
                     onLaunch: { game, frame in
                         launcher.begin(game, coverURL: library.covers[game.romHash], from: frame)
                     },
+                    sendTargets: sendTargets,
                     onContextDetails: { detailsGame = $0 },
                     onContextSettings: { settingsGame = $0 },
+                    onContextSend: { handleSend($0, target: $1) },
                     onContextDelete: { library.delete($0) })
                     .frame(height: cardH + 40)
 
@@ -213,8 +233,11 @@ struct LibraryView: View {
             circleButton("gearshape") { showSettings = true }
                 .accessibilityLabel("Settings")
 
-            if let card = continuity.banner, let game = game(forHash: card.metadata.romHash) {
-                NowPlayingCapsule(card: card, game: game)
+            if !continuity.recentSessions.isEmpty {
+                ContinueStrip(
+                    sessions: continuity.recentSessions,
+                    game: { game(forHash: $0) },
+                    source: { continuity.sourceLabel(for: $0) })
             } else if let offer = continuity.transferOffer {
                 TransferCapsule(card: offer.card) { await handleTransfer(offer) }
             } else {
@@ -244,6 +267,33 @@ struct LibraryView: View {
 
     private func game(forHash hash: String) -> Game? {
         library.games.first { $0.romHash == hash }
+    }
+
+    /// "Send to My Devices": offer this game to the user's other devices through iCloud so it appears
+    /// in their Continue strip. Gated by the same ownership consent as Settings ▸ Handoff — if that's
+    /// off we ask once, then remember the choice.
+    private func handleSend(_ game: Game, target: String?) {
+        if AppSettings.transferEnabled {
+            Task { await sendToDevices(game, target: target) }
+        } else {
+            sendConsent = (game, target)
+        }
+    }
+
+    private func sendToDevices(_ game: Game, target: String?) async {
+        // Cross-device send travels through your private iCloud; without a provisioned container there's
+        // nowhere for the game to go. Say that plainly instead of implying a network fault.
+        guard ContinuityService.cloudKitUsable else {
+            AppNotifier.shared.post(.info(
+                "Sending needs iCloud — it isn’t set up on this build yet",
+                symbol: "icloud.slash", caption: "Handoff"))
+            return
+        }
+        let ok = await continuity.offerROM(game: game, targetDevice: target)
+        let dest = target ?? "your devices"
+        AppNotifier.shared.post(ok
+            ? .info("Sent to \(dest)", symbol: "iphone.and.arrow.forward", caption: "Handoff")
+            : .info("Couldn’t reach iCloud — try again", symbol: "icloud.slash", caption: "Handoff"))
     }
 
     private func handleImport(_ result: Result<[URL], Error>) {
@@ -295,6 +345,7 @@ struct LibraryView: View {
             await continuity.clearROM(romHash: romHash)   // ROM is local now — keep the cloud copy ephemeral
             await continuity.refreshBanner(for: library.games)
             await continuity.refreshTransferOffer(for: library.games)
+            sendTargets = await continuity.sendTargets()
             // Focus the received game so the shelf centers it (its frame becomes the morph target),
             // then celebrate the arrival, NameDrop-style.
             if let idx = library.games.firstIndex(where: { $0.id == game.id }) { selected = idx }
@@ -322,8 +373,11 @@ private struct CartShelf: View {
     /// The centered cart was tapped — launch it, with its exact on-screen (global) frame so the
     /// cinematic lifts off from the shelf.
     var onLaunch: (Game, CGRect) -> Void
+    var sendTargets: [String]
     var onContextDetails: (Game) -> Void
     var onContextSettings: (Game) -> Void
+    /// (game, targetDevice) — targetDevice nil means broadcast to all the user's devices.
+    var onContextSend: (Game, String?) -> Void
     var onContextDelete: (Game) -> Void
 
     private static let gap: CGFloat = 22
@@ -367,6 +421,25 @@ private struct CartShelf: View {
                             }
                             Button { onContextSettings(games[i]) } label: {
                                 Label("Settings", systemImage: "slider.horizontal.3")
+                            }
+                            if sendTargets.isEmpty {
+                                Button { onContextSend(games[i], nil) } label: {
+                                    Label("Send to My Devices", systemImage: "iphone.and.arrow.forward")
+                                }
+                            } else {
+                                Menu {
+                                    ForEach(sendTargets, id: \.self) { device in
+                                        Button { onContextSend(games[i], device) } label: {
+                                            Label(device, systemImage: "laptopcomputer.and.iphone")
+                                        }
+                                    }
+                                    Divider()
+                                    Button { onContextSend(games[i], nil) } label: {
+                                        Label("All My Devices", systemImage: "square.stack.3d.up")
+                                    }
+                                } label: {
+                                    Label("Send to…", systemImage: "iphone.and.arrow.forward")
+                                }
                             }
                             Button(role: .destructive) { onContextDelete(games[i]) } label: {
                                 Label("Delete", systemImage: "trash")
@@ -463,9 +536,37 @@ private struct CartCard: View {
 /// Apple-Music-style "now playing" capsule for the floating bottom bar: the last session's thumbnail,
 /// the game, and a Play button. Tapping resumes from the Continuity snapshot. Fills the space between
 /// the two circle buttons; glass background to match Apple Music's mini-player.
+/// A horizontally paging strip of resume capsules — one per in-progress game, newest first. With a
+/// single session it looks and behaves exactly like the old mini-player; with several (e.g. one paused
+/// on the phone and one on the Mac) you swipe between them, each labelled with its source device.
+private struct ContinueStrip: View {
+    let sessions: [ContinuityCard]
+    let game: (String) -> Game?
+    let source: (ContinuityCard) -> String?
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                ForEach(sessions, id: \.metadata.romHash) { card in
+                    if let g = game(card.metadata.romHash) {
+                        NowPlayingCapsule(card: card, game: g, source: source(card))
+                            .containerRelativeFrame(.horizontal)   // one capsule per page
+                    }
+                }
+            }
+            .scrollTargetLayout()
+        }
+        .scrollTargetBehavior(.viewAligned)
+        .scrollIndicators(.hidden)
+        .frame(height: 54)
+    }
+}
+
 private struct NowPlayingCapsule: View {
     let card: ContinuityCard
     let game: Game
+    /// The device this session came from, or nil when it's this device's own session.
+    var source: String? = nil
 
     var body: some View {
         NavigationLink(value: PlayRequest(game: game, resume: true)) {
@@ -520,7 +621,9 @@ private struct NowPlayingCapsule: View {
     }
 
     private var subtitle: String {
-        "Continue · " + card.metadata.timestamp.formatted(.relative(presentation: .named))
+        let time = card.metadata.timestamp.formatted(.relative(presentation: .named))
+        // Tag the source hardware for a cross-device session; "Continue" for this device's own.
+        return (source.map { "\($0) · " } ?? "Continue · ") + time
     }
 }
 

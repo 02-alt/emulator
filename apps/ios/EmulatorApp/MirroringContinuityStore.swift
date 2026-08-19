@@ -59,8 +59,18 @@ struct MirroringContinuityStore: ContinuityStore {
     }
 
     func publishROM(romHash: String, fileName: String, coverPNG: Data?, data: Data) async throws {
-        try await local.publishROM(romHash: romHash, fileName: fileName, coverPNG: coverPNG, data: data)  // instant local copy
-        try? await cloud.publishROM(romHash: romHash, fileName: fileName, coverPNG: coverPNG, data: data)  // best-effort to iCloud
+        try await publishROM(romHash: romHash, fileName: fileName, coverPNG: coverPNG, data: data, targetDevice: nil)
+    }
+
+    func publishROM(romHash: String, fileName: String, coverPNG: Data?, data: Data, targetDevice: String?) async throws {
+        try await local.publishROM(romHash: romHash, fileName: fileName, coverPNG: coverPNG, data: data, targetDevice: targetDevice)  // instant local copy
+        try? await cloud.publishROM(romHash: romHash, fileName: fileName, coverPNG: coverPNG, data: data, targetDevice: targetDevice)  // best-effort to iCloud
+    }
+
+    func fetchROMTarget(romHash: String) async throws -> String? {
+        // The transfer source is another device, so the offer lives in iCloud; fall back to local.
+        if let target = try? await cloud.fetchROMTarget(romHash: romHash) { return target }
+        return try await local.fetchROMTarget(romHash: romHash)
     }
 
     func fetchROMInfo(romHash: String) async throws -> String? {
