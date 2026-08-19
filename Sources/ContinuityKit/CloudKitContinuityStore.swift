@@ -26,7 +26,10 @@ public struct CloudKitContinuityStore: ContinuityStore {
 
     // MARK: Record schema
 
-    private enum RecordType { static let snapshot = "ContinuitySnapshot" }
+    private enum RecordType {
+        static let snapshot = "ContinuitySnapshot"
+        static let rom = "ContinuityROM"   // separate, ephemeral ROM offer
+    }
     private enum Field {
         static let romHash = "romHash"
         static let romTitle = "romTitle"
@@ -36,6 +39,9 @@ public struct CloudKitContinuityStore: ContinuityStore {
         static let coreVersion = "coreVersion"
         static let thumbnail = "thumbnail"   // CKAsset
         static let state = "state"           // CKAsset — the heavy one
+        static let fileName = "fileName"     // ROM record: original filename
+        static let rom = "rom"               // ROM record: CKAsset — the heavy ROM
+        static let cover = "cover"           // ROM record: CKAsset — box art (small, optional)
     }
 
     /// Keys sufficient to build a ``ContinuityCard`` — deliberately omits `state`.
@@ -129,6 +135,121 @@ public struct CloudKitContinuityStore: ContinuityStore {
     public func delete(romHash: String) async throws {
         do {
             _ = try await database.deleteRecord(withID: CKRecord.ID(recordName: romHash))
+        } catch let error as CKError where error.code == .unknownItem {
+            // Already gone — deleting is idempotent.
+        } catch {
+            throw mapAccountError(error)
+        }
+    }
+
+    public func allCards() async throws -> [ContinuityCard] {
+        let query = CKQuery(
+            recordType: RecordType.snapshot,
+            predicate: NSPredicate(value: true))
+        do {
+            let (matches, _) = try await database.records(
+                matching: query, desiredKeys: Self.cardKeys)
+            var cards: [ContinuityCard] = []
+            for (_, result) in matches {
+                guard let record = try? result.get() else { continue }
+                let metadata = try metadata(from: record)
+                let thumb = (record[Field.thumbnail] as? CKAsset)?.fileURL
+                    .flatMap { try? Data(contentsOf: $0) }
+                cards.append(ContinuityCard(metadata: metadata, thumbnailPNG: thumb))
+            }
+            return cards
+        } catch let error as CKError where error.code == .unknownItem {
+            return []   // no records / schema not yet materialized
+        } catch {
+            throw mapAccountError(error)
+        }
+    }
+
+    // MARK: ROM transfer
+
+    /// The ROM offer lives in its own record; `recordName` must be unique per database (across
+    /// record types), so it can't reuse the snapshot's `romHash` — we namespace it.
+    private func romRecordID(_ romHash: String) -> CKRecord.ID {
+        CKRecord.ID(recordName: "rom:\(romHash)")
+    }
+
+    public func publishROM(romHash: String, fileName: String, coverPNG: Data?, data: Data) async throws {
+        let recordID = romRecordID(romHash)
+        let record: CKRecord
+        do {
+            record = try await database.record(for: recordID)
+        } catch let error as CKError where error.code == .unknownItem {
+            record = CKRecord(recordType: RecordType.rom, recordID: recordID)
+        } catch {
+            throw mapAccountError(error)
+        }
+        record[Field.fileName] = fileName as CKRecordValue
+
+        let scratch = try makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let romURL = scratch.appendingPathComponent("rom.bin")
+        try data.write(to: romURL)
+        record[Field.rom] = CKAsset(fileURL: romURL)
+
+        if let coverPNG {
+            let coverURL = scratch.appendingPathComponent("cover.png")
+            try coverPNG.write(to: coverURL)
+            record[Field.cover] = CKAsset(fileURL: coverURL)
+        } else {
+            record[Field.cover] = nil
+        }
+
+        do {
+            _ = try await database.save(record)
+        } catch {
+            throw mapAccountError(error)
+        }
+    }
+
+    public func fetchROMCover(romHash: String) async throws -> Data? {
+        let record: CKRecord
+        do {
+            record = try await database.record(for: romRecordID(romHash))
+        } catch let error as CKError where error.code == .unknownItem {
+            return nil
+        } catch {
+            throw mapAccountError(error)
+        }
+        guard let asset = record[Field.cover] as? CKAsset, let url = asset.fileURL else { return nil }
+        return try? Data(contentsOf: url)
+    }
+
+    public func fetchROMInfo(romHash: String) async throws -> String? {
+        let recordID = romRecordID(romHash)
+        do {
+            let results = try await database.records(
+                for: [recordID], desiredKeys: [Field.fileName])
+            guard let result = results[recordID] else { return nil }
+            let record = try result.get()
+            return record[Field.fileName] as? String
+        } catch let error as CKError where error.code == .unknownItem {
+            return nil
+        } catch {
+            throw mapAccountError(error)
+        }
+    }
+
+    public func fetchROM(romHash: String) async throws -> Data? {
+        let record: CKRecord
+        do {
+            record = try await database.record(for: romRecordID(romHash))
+        } catch let error as CKError where error.code == .unknownItem {
+            return nil
+        } catch {
+            throw mapAccountError(error)
+        }
+        guard let asset = record[Field.rom] as? CKAsset, let url = asset.fileURL else { return nil }
+        return try Data(contentsOf: url)
+    }
+
+    public func clearROM(romHash: String) async throws {
+        do {
+            _ = try await database.deleteRecord(withID: romRecordID(romHash))
         } catch let error as CKError where error.code == .unknownItem {
             // Already gone — deleting is idempotent.
         } catch {

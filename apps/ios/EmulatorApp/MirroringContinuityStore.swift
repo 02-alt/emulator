@@ -42,4 +42,45 @@ struct MirroringContinuityStore: ContinuityStore {
         try? await local.delete(romHash: romHash)
         try? await cloud.delete(romHash: romHash)
     }
+
+    func allCards() async throws -> [ContinuityCard] {
+        let localCards = (try? await local.allCards()) ?? []
+        let cloudCards = (try? await cloud.allCards()) ?? []
+        // Merge by romHash, keeping the newer card so a cross-device session wins over a stale local one.
+        var byHash: [String: ContinuityCard] = [:]
+        for card in localCards + cloudCards {
+            let hash = card.metadata.romHash
+            if let existing = byHash[hash], existing.metadata.timestamp >= card.metadata.timestamp {
+                continue
+            }
+            byHash[hash] = card
+        }
+        return Array(byHash.values)
+    }
+
+    func publishROM(romHash: String, fileName: String, coverPNG: Data?, data: Data) async throws {
+        try await local.publishROM(romHash: romHash, fileName: fileName, coverPNG: coverPNG, data: data)  // instant local copy
+        try? await cloud.publishROM(romHash: romHash, fileName: fileName, coverPNG: coverPNG, data: data)  // best-effort to iCloud
+    }
+
+    func fetchROMInfo(romHash: String) async throws -> String? {
+        // The transfer source is another device, so the offer lives in iCloud; fall back to local.
+        if let info = try? await cloud.fetchROMInfo(romHash: romHash) { return info }
+        return try await local.fetchROMInfo(romHash: romHash)
+    }
+
+    func fetchROM(romHash: String) async throws -> Data? {
+        if let rom = try? await cloud.fetchROM(romHash: romHash) { return rom }
+        return try await local.fetchROM(romHash: romHash)
+    }
+
+    func fetchROMCover(romHash: String) async throws -> Data? {
+        if let cover = try? await cloud.fetchROMCover(romHash: romHash) { return cover }
+        return try await local.fetchROMCover(romHash: romHash)
+    }
+
+    func clearROM(romHash: String) async throws {
+        try? await local.clearROM(romHash: romHash)
+        try? await cloud.clearROM(romHash: romHash)
+    }
 }

@@ -31,4 +31,36 @@ public protocol ContinuityStore: Sendable {
     /// Remove the snapshot for a game (e.g. after a successful local resume, or on the
     /// user clearing continuity).
     func delete(romHash: String) async throws
+
+    /// Every session currently stored, as light cards (no savestate). Lets a device discover
+    /// sessions for games it doesn't have locally — the case that drives an offer-to-transfer.
+    /// Order is unspecified; callers sort by `metadata.timestamp` if they need "newest".
+    func allCards() async throws -> [ContinuityCard]
+
+    // MARK: ROM transfer (opt-in, ephemeral)
+    //
+    // A ROM offer lives in its own record, separate from the frequent savestate publishes, so
+    // state sync stays cheap and the (heavy, copyright-sensitive) ROM can be uploaded once and
+    // torn down independently. The receiver deletes the offer as soon as it has imported the ROM,
+    // making the cloud copy transient. Everything stays in the user's *own* private database.
+
+    /// Offer a game's ROM bytes for transfer to another of the user's devices that lacks it.
+    /// Idempotent per `romHash`. `fileName` carries the original name (incl. extension) so the
+    /// receiver can import it with the right system and a clean title. `coverPNG` is the sender's
+    /// cached box art (optional) so the receiver shows the exact same art without re-matching.
+    func publishROM(romHash: String, fileName: String, coverPNG: Data?, data: Data) async throws
+
+    /// The offered ROM's filename if a transfer is available for this game, else nil. Cheap —
+    /// must NOT download the ROM bytes.
+    func fetchROMInfo(romHash: String) async throws -> String?
+
+    /// Download the offered ROM bytes, or nil if no offer exists.
+    func fetchROM(romHash: String) async throws -> Data?
+
+    /// Download the offered box art (small), or nil if none was included with the offer.
+    func fetchROMCover(romHash: String) async throws -> Data?
+
+    /// Delete the ROM offer (bytes + filename). Called by the receiver right after import so the
+    /// copy is ephemeral, or by the sender to withdraw an offer.
+    func clearROM(romHash: String) async throws
 }

@@ -20,6 +20,16 @@ struct LibraryView: View {
     @State private var detailsGame: Game?
     @State private var showSettings = false
     @State private var showSearch = false
+    @State private var arrival: ArrivalInfo?
+    @State private var focusedCartFrame: CGRect?
+
+    /// A just-received transfer, driving the NameDrop-style arrival animation.
+    struct ArrivalInfo: Identifiable {
+        let id = UUID()
+        let game: Game
+        let deviceName: String
+        let cover: UIImage?
+    }
 
     // Every ROM extension we import, across all supported systems (GBA + Game Boy / Color), as UTTypes
     // for the Files picker. `.data` stays in the list too, so a ROM Files reports as plain data is
@@ -34,6 +44,17 @@ struct LibraryView: View {
                 emptyState
             } else {
                 content
+            }
+        }
+        .onPreferenceChange(FocusedCartFrameKey.self) { focusedCartFrame = $0 }
+        .overlay {
+            if let arrival {
+                TransferArrivalOverlay(game: arrival.game, deviceName: arrival.deviceName,
+                                       cover: arrival.cover, targetFrame: focusedCartFrame) {
+                    self.arrival = nil   // cart has morphed into its shelf slot; remove the overlay
+                }
+                .transition(.opacity)
+                .zIndex(20)
             }
         }
         .navigationDestination(for: PlayRequest.self) { GameView(game: $0.game, resume: $0.resume) }
@@ -68,9 +89,15 @@ struct LibraryView: View {
         .sheet(item: $settingsGame) { GameSettingsView(game: $0) }
         .sheet(item: $detailsGame) { GameDetailsSheet(game: $0) }
         .sheet(isPresented: $showSettings) { SettingsView() }
-        .task(id: library.games.count) { await continuity.refreshBanner(for: library.games) }
+        .task(id: library.games.count) {
+            await continuity.refreshBanner(for: library.games)
+            await continuity.refreshTransferOffer(for: library.games)
+        }
         .onAppear {
-            Task { await continuity.refreshBanner(for: library.games) }
+            Task {
+                await continuity.refreshBanner(for: library.games)
+                await continuity.refreshTransferOffer(for: library.games)
+            }
             if ProcessInfo.processInfo.environment["EMU_OPEN_SETTINGS"] != nil { showSettings = true }
         }
     }
@@ -188,6 +215,8 @@ struct LibraryView: View {
 
             if let card = continuity.banner, let game = game(forHash: card.metadata.romHash) {
                 NowPlayingCapsule(card: card, game: game)
+            } else if let offer = continuity.transferOffer {
+                TransferCapsule(card: offer.card) { await handleTransfer(offer) }
             } else {
                 Spacer(minLength: 0)
             }
@@ -225,6 +254,54 @@ struct LibraryView: View {
                 catch { importError = error.localizedDescription }
             }
         case .failure(let error):
+            importError = error.localizedDescription
+        }
+    }
+
+    /// Accept a transfer: download the offered ROM, import it, retire the cloud offer, then play the
+    /// arrival animation. Once local, the game owns the accompanying session so the green resume capsule
+    /// appears — a second tap continues where the other device left off.
+    private func handleTransfer(_ offer: (card: ContinuityCard, fileName: String)) async {
+        let romHash = offer.card.metadata.romHash
+        guard let data = await continuity.downloadROM(romHash: romHash) else {
+            importError = "Couldn’t fetch the game from your other device."
+            return
+        }
+        // Name the imported file from the session's real title, not the sender's (possibly content-hash)
+        // filename — otherwise that hash becomes the game's title and defeats box-art lookup. Keep the
+        // sender's extension (it drives GBA/GBC system detection).
+        let ext = (offer.fileName as NSString).pathExtension
+        let title = offer.card.metadata.romTitle
+            .components(separatedBy: CharacterSet(charactersIn: "/\\:*?\"<>|"))
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let importName = (title.isEmpty || ext.isEmpty) ? offer.fileName : "\(title).\(ext)"
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(importName)
+        do {
+            try data.write(to: tmp)
+            let game = try library.importROM(from: tmp)
+            try? FileManager.default.removeItem(at: tmp)
+            guard game.romHash == romHash else {
+                importError = "That transfer didn’t match the game."
+                return
+            }
+            // Apply the sender's box art (if any) before retiring the offer, so the cart shows the
+            // exact same cover — a cleaned title often won't re-match the thumbnail repo here.
+            var arrivalCover: UIImage?
+            if let coverData = await continuity.downloadROMCover(romHash: romHash) {
+                library.setCover(fromImageData: coverData, for: game)
+                arrivalCover = UIImage(data: coverData)
+            }
+            await continuity.clearROM(romHash: romHash)   // ROM is local now — keep the cloud copy ephemeral
+            await continuity.refreshBanner(for: library.games)
+            await continuity.refreshTransferOffer(for: library.games)
+            // Focus the received game so the shelf centers it (its frame becomes the morph target),
+            // then celebrate the arrival, NameDrop-style.
+            if let idx = library.games.firstIndex(where: { $0.id == game.id }) { selected = idx }
+            withAnimation(.easeOut(duration: 0.2)) {
+                arrival = ArrivalInfo(game: game, deviceName: offer.card.metadata.deviceName, cover: arrivalCover)
+            }
+        } catch {
             importError = error.localizedDescription
         }
     }
@@ -270,6 +347,16 @@ private struct CartShelf: View {
                     let d = min(1, abs(x - center) / step)     // 0 at centre → 1 a full step away
                     CartCard(game: games[i], coverURL: covers[games[i].romHash],
                              width: cardW, isFocused: true)
+                        .background {
+                            // Report the centered cart's on-screen frame so a received transfer's
+                            // arrival animation can morph the cart into this exact shelf slot.
+                            if i == sel {
+                                GeometryReader { g in
+                                    Color.clear.preference(key: FocusedCartFrameKey.self,
+                                                           value: g.frame(in: .global))
+                                }
+                            }
+                        }
                         .scaleEffect(1 - d * 0.12)            // centre full size, neighbours recede
                         .opacity(1 - d * 0.45)                // …and dim with distance (depth)
                         .position(x: x, y: h / 2)
@@ -434,5 +521,180 @@ private struct NowPlayingCapsule: View {
 
     private var subtitle: String {
         "Continue · " + card.metadata.timestamp.formatted(.relative(presentation: .named))
+    }
+}
+
+/// The bottom-bar affordance for a session on a game this device doesn't have yet, whose source device
+/// offered the ROM for transfer. Tapping downloads + imports the game (the opt-in, ephemeral Handoff
+/// transfer); the normal resume capsule then appears for the actual continue.
+private struct TransferCapsule: View {
+    let card: ContinuityCard
+    /// Runs the download + import; the parent view owns the async work and error surface.
+    let accept: () async -> Void
+    @State private var transferring = false
+
+    var body: some View {
+        Button {
+            guard !transferring else { return }
+            transferring = true
+            Task { await accept(); transferring = false }
+        } label: {
+            HStack(spacing: 10) {
+                thumbnail
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(card.metadata.romTitle)
+                        .font(DS.mono(13, .semibold)).foregroundStyle(DS.textPrimary).lineLimit(1)
+                    Text(transferring ? "Transferring…" : "Transfer from \(card.metadata.deviceName)")
+                        .font(DS.mono(9)).foregroundStyle(DS.textTertiary).lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: transferring ? "arrow.down.circle" : "square.and.arrow.down")
+                    .font(.system(size: 15))
+                    .foregroundStyle(.blue)
+                    .symbolEffect(.pulse, isActive: transferring)
+                    .padding(.trailing, 12)
+            }
+            .padding(.leading, 8)
+            .frame(maxWidth: .infinity)
+            .frame(height: 54)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay(Capsule().stroke(Color.blue.opacity(0.35), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(transferring)
+    }
+
+    @ViewBuilder
+    private var thumbnail: some View {
+        if let data = card.thumbnailPNG, let image = UIImage(data: data) {
+            Image(uiImage: image).resizable().aspectRatio(contentMode: .fill)
+                .frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 7))
+        } else {
+            RoundedRectangle(cornerRadius: 7).fill(DS.background).frame(width: 40, height: 40)
+        }
+    }
+}
+
+/// AirDrop / NameDrop-style arrival: a just-received game's cartridge swoops in from the top edge with
+/// a glow + radar waves + heavy haptic, announces "RECEIVED from <device>", then — the key bit — the
+/// cart **morphs into its actual slot in the shelf** (glides + scales to the focused cart's measured
+/// frame) as the glow/scrim/text dissolve. Tap anywhere to dismiss early; auto-dismisses after a beat.
+private struct TransferArrivalOverlay: View {
+    let game: Game
+    let deviceName: String
+    let cover: UIImage?
+    /// The focused shelf cart's frame in global coords — the exit-morph target. Nil ⇒ fade in place.
+    let targetFrame: CGRect?
+    let onDone: () -> Void
+
+    @State private var landed = false
+    @State private var leaving = false
+
+    private let cartW: CGFloat = 300
+
+    var body: some View {
+        GeometryReader { geo in
+            let cartH = cartW / 1.78
+            let restCenter = CGPoint(x: geo.size.width / 2, y: geo.size.height / 2 - 80)
+            let topStart = CGPoint(x: geo.size.width / 2, y: -cartH)
+            let target = targetFrame.map { CGPoint(x: $0.midX, y: $0.midY) } ?? restCenter
+            let targetScale = (targetFrame?.width ?? cartW) / cartW
+            let cartCenter = leaving ? target : (landed ? restCenter : topStart)
+            let cartScale = leaving ? targetScale : (landed ? 1 : 0.5)
+
+            ZStack {
+                Color.black.opacity(leaving ? 0 : 1).ignoresSafeArea()
+
+                RadarWaves(active: landed && !leaving)
+                    .frame(width: 240, height: 240)
+                    .position(restCenter)
+                    .opacity(leaving ? 0 : 1)
+
+                RadialGradient(colors: [Color.blue.opacity(0.5), .clear],
+                               center: .center, startRadius: 2, endRadius: 240)
+                    .frame(width: 480, height: 480)
+                    .scaleEffect(landed ? 1 : 0.2)
+                    .opacity(landed && !leaving ? 1 : 0)
+                    .blur(radius: 6)
+                    .position(restCenter)
+
+                CartridgeView(system: game.system, cover: cover, title: game.displayTitle,
+                              systemTag: game.system.shortName)
+                    .frame(width: cartW, height: cartH)
+                    .shadow(color: .blue.opacity(0.55), radius: landed && !leaving ? 34 : 6, y: 12)
+                    .rotationEffect(.degrees(landed ? 0 : -8))
+                    .scaleEffect(cartScale)
+                    .position(cartCenter)
+
+                VStack(spacing: 5) {
+                    Text("RECEIVED").font(DS.mono(11, .semibold)).tracking(3)
+                        .foregroundStyle(.blue)
+                    Text(game.displayTitle).font(DS.mono(16, .bold))
+                        .foregroundStyle(DS.textPrimary)
+                        .multilineTextAlignment(.center).lineLimit(2)
+                    Text("from \(deviceName)").font(DS.mono(11))
+                        .foregroundStyle(DS.textTertiary)
+                }
+                .padding(.horizontal, 40)
+                .frame(width: geo.size.width)
+                .position(x: geo.size.width / 2, y: restCenter.y + cartH / 2 + 64)
+                .opacity(landed && !leaving ? 1 : 0)
+            }
+            .contentShape(Rectangle())
+            .onAppear(perform: run)
+            .onTapGesture(perform: finish)
+        }
+        .ignoresSafeArea()
+    }
+
+    private func run() {
+        withAnimation(.spring(response: 0.6, dampingFraction: 0.7)) { landed = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.1) { finish() }
+    }
+
+    private func finish() {
+        guard !leaving else { return }
+        // Morph: glide + scale the cart into its shelf slot while the glow, waves, scrim and text
+        // dissolve — the cart lands exactly on the real shelf cart, then the overlay is removed.
+        withAnimation(.spring(response: 0.6, dampingFraction: 0.86)) { leaving = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { onDone() }
+    }
+}
+
+/// Concentric "sonar" rings that scale up and fade out on a staggered repeating loop — the radiating
+/// waves of Apple's AirDrop/NameDrop.
+private struct RadarWaves: View {
+    var active: Bool
+    private let rings = 4
+    private let period = 2.6
+    @State private var go = false
+
+    var body: some View {
+        ZStack {
+            ForEach(0..<rings, id: \.self) { i in
+                Circle()
+                    .stroke(Color.blue.opacity(0.55), lineWidth: 2.5)
+                    .scaleEffect(go ? 2.9 : 0.18)
+                    .opacity(go ? 0 : 0.8)
+                    .animation(active
+                        ? .easeOut(duration: period).repeatForever(autoreverses: false)
+                            .delay(Double(i) * period / Double(rings))
+                        : .default,
+                        value: go)
+            }
+        }
+        .onAppear { if active { go = true } }
+        .onChange(of: active) { _, now in go = now }
+    }
+}
+
+/// Reports the focused shelf cart's frame (global coords) so the arrival animation can morph into it.
+private struct FocusedCartFrameKey: PreferenceKey {
+    static let defaultValue: CGRect? = nil
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
+        value = nextValue() ?? value
     }
 }

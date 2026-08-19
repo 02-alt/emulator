@@ -90,4 +90,38 @@ public actor ContinuityCoordinator {
     public func clear(romHash: String) async throws {
         try await store.delete(romHash: romHash)
     }
+
+    /// Every stored session as light cards (no savestate), newest first. Lets a device discover
+    /// sessions for games it doesn't have locally — the input to an offer-to-transfer.
+    public func allCards() async throws -> [ContinuityCard] {
+        try await store.allCards().sorted { $0.metadata.timestamp > $1.metadata.timestamp }
+    }
+
+    // MARK: ROM transfer (opt-in, ephemeral)
+
+    /// Offer a game's ROM so another of the user's devices that lacks it can receive and import it.
+    /// `coverPNG` is the sender's cached box art (optional) so the receiver shows matching art.
+    public func publishROM(romHash: String, fileName: String, coverPNG: Data?, data: Data) async throws {
+        try await store.publishROM(romHash: romHash, fileName: fileName, coverPNG: coverPNG, data: data)
+    }
+
+    /// The offered ROM's filename for this game, or nil if no transfer is available. Cheap.
+    public func romOffer(forRomHash romHash: String) async throws -> String? {
+        try await store.fetchROMInfo(romHash: romHash)
+    }
+
+    /// Download the offered ROM bytes, or nil if none.
+    public func fetchROM(forRomHash romHash: String) async throws -> Data? {
+        try await store.fetchROM(romHash: romHash)
+    }
+
+    /// Download the offered box art, or nil if none was included.
+    public func fetchROMCover(forRomHash romHash: String) async throws -> Data? {
+        try await store.fetchROMCover(romHash: romHash)
+    }
+
+    /// Delete the ROM offer — called by the receiver right after import to keep the copy ephemeral.
+    public func clearROM(romHash: String) async throws {
+        try await store.clearROM(romHash: romHash)
+    }
 }

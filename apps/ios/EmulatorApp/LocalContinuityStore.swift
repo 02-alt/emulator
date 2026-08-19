@@ -50,4 +50,51 @@ actor LocalContinuityStore: ContinuityStore {
     func delete(romHash: String) async throws {
         try? FileManager.default.removeItem(at: dir(romHash))
     }
+
+    func allCards() async throws -> [ContinuityCard] {
+        let entries = (try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: nil)) ?? []
+        var cards: [ContinuityCard] = []
+        for entry in entries {
+            guard let card = try? await fetchCard(romHash: entry.lastPathComponent) else { continue }
+            cards.append(card)
+        }
+        return cards
+    }
+
+    // MARK: ROM transfer
+    // Layout: <romHash>/rom.bin (bytes) + rom-name.txt (original filename) + cover.png (optional art).
+
+    func publishROM(romHash: String, fileName: String, coverPNG: Data?, data: Data) async throws {
+        let dir = dir(romHash)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try data.write(to: dir.appendingPathComponent("rom.bin"), options: .atomic)
+        try Data(fileName.utf8).write(to: dir.appendingPathComponent("rom-name.txt"), options: .atomic)
+        let coverURL = dir.appendingPathComponent("cover.png")
+        if let coverPNG {
+            try coverPNG.write(to: coverURL, options: .atomic)
+        } else {
+            try? FileManager.default.removeItem(at: coverURL)
+        }
+    }
+
+    func fetchROMInfo(romHash: String) async throws -> String? {
+        guard let data = try? Data(contentsOf: dir(romHash).appendingPathComponent("rom-name.txt"))
+        else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    func fetchROM(romHash: String) async throws -> Data? {
+        try? Data(contentsOf: dir(romHash).appendingPathComponent("rom.bin"))
+    }
+
+    func fetchROMCover(romHash: String) async throws -> Data? {
+        try? Data(contentsOf: dir(romHash).appendingPathComponent("cover.png"))
+    }
+
+    func clearROM(romHash: String) async throws {
+        try? FileManager.default.removeItem(at: dir(romHash).appendingPathComponent("rom.bin"))
+        try? FileManager.default.removeItem(at: dir(romHash).appendingPathComponent("rom-name.txt"))
+        try? FileManager.default.removeItem(at: dir(romHash).appendingPathComponent("cover.png"))
+    }
 }

@@ -52,6 +52,7 @@ enum SettingsKey {
     static let ambientVolume = "settings.ambientVolume"
     static let controlScale = "settings.controlScale"
     static let controlOpacity = "settings.controlOpacity"
+    static let transferEnabled = "continuity.transferEnabled"
 }
 
 enum SettingsDefault {
@@ -69,6 +70,7 @@ enum SettingsDefault {
     static let ambientVolume = 0.6
     static let controlScale = 1.0
     static let controlOpacity = 1.0
+    static let transferEnabled = false   // off: never copy game files between devices (see About ▸ Handoff)
 }
 
 /// Read-side of the global settings for non-UI code (launch-time reads).
@@ -84,6 +86,7 @@ enum AppSettings {
     static var fastForwardSpeed: Double { d.object(forKey: SettingsKey.fastForwardSpeed) as? Double ?? SettingsDefault.fastForwardSpeed }
     static var rewindEnabled: Bool { d.object(forKey: SettingsKey.rewindEnabled) as? Bool ?? SettingsDefault.rewindEnabled }
     static var autoResume: Bool { d.object(forKey: SettingsKey.autoResume) as? Bool ?? SettingsDefault.autoResume }
+    static var transferEnabled: Bool { d.object(forKey: SettingsKey.transferEnabled) as? Bool ?? SettingsDefault.transferEnabled }
     static var joystickAsDpad: Bool { d.object(forKey: SettingsKey.joystickAsDpad) as? Bool ?? SettingsDefault.joystickAsDpad }
     static var ambientScene: AmbientScene { AmbientScene(rawValue: d.object(forKey: SettingsKey.ambientScene) as? Int ?? SettingsDefault.ambientScene) ?? .off }
     static var ambientVolume: Double { d.object(forKey: SettingsKey.ambientVolume) as? Double ?? SettingsDefault.ambientVolume }

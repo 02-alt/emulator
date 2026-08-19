@@ -17,6 +17,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.fastForwardSpeed) private var fastForwardSpeed = SettingsDefault.fastForwardSpeed
     @AppStorage(SettingsKey.rewindEnabled) private var rewindEnabled = SettingsDefault.rewindEnabled
     @AppStorage(SettingsKey.autoResume) private var autoResume = SettingsDefault.autoResume
+    @AppStorage(SettingsKey.transferEnabled) private var transferEnabled = SettingsDefault.transferEnabled
     @AppStorage(SettingsKey.joystickAsDpad) private var joystickAsDpad = SettingsDefault.joystickAsDpad
     @AppStorage(SettingsKey.ambientScene) private var ambientScene = SettingsDefault.ambientScene
     @AppStorage(SettingsKey.ambientVolume) private var ambientVolume = SettingsDefault.ambientVolume
@@ -93,6 +94,17 @@ struct SettingsView: View {
                     }
                     Toggle("Rewind", isOn: $rewindEnabled).tint(.green)
                     Toggle("Auto-Resume on Launch", isOn: $autoResume).tint(.green)
+                }
+
+                Section {
+                    Toggle("Transfer Games Between My Devices", isOn: $transferEnabled).tint(.green)
+                } header: {
+                    Text("Handoff")
+                } footer: {
+                    Text("Continue a game on another of your devices even if it doesn’t have the game yet: "
+                        + "Encore copies it over through your own private iCloud — never our servers — and "
+                        + "deletes the copy the moment your other device receives it. Only turn this on for "
+                        + "games you legally own. We don’t condone piracy.")
                 }
 
                 Section {

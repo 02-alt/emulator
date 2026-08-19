@@ -3,6 +3,7 @@ import Observation
 import UIKit
 import LibraryKit
 import ContinuityKit
+import GBACore
 
 /// App-facing Continuity: wraps `ContinuityKit.ContinuityCoordinator` and surfaces the single newest
 /// resumable session as `banner` for the library to show "Continue where you left off".
@@ -13,12 +14,13 @@ import ContinuityKit
 @MainActor
 @Observable
 final class ContinuityService {
-    /// Identifies this build's savestate format. Bump when the core (or its state layout) changes so
-    /// stale snapshots from an old build are refused rather than crashing `loadState`.
-    static let coreVersion = "mgba-0.10.5"
+    /// Identifies this build's savestate format, derived from the linked libmgba so it matches the
+    /// macOS app byte-for-byte (see `MGBACore.coreVersion`). Snapshots from a different build are
+    /// refused rather than crashing `loadState`.
+    static let coreVersion = MGBACore.coreVersion
 
     /// The app's CloudKit container (must match the iCloud entitlement in EmulatorApp.entitlements).
-    static let cloudContainer = "iCloud.com.comalada.gbaemulator"
+    static let cloudContainer = "iCloud.com.buildtoberemembered.encore"
 
     /// Whether it's safe to construct the CloudKit store. `CKContainer(identifier:)` *traps* (an
     /// uncatchable SIGTRAP) when the container isn't provisioned in the signed app — which is always
@@ -120,5 +122,57 @@ final class ContinuityService {
     func clear(romHash: String) async {
         try? await coordinator.clear(romHash: romHash)
         if banner?.metadata.romHash == romHash { banner = nil }
+    }
+
+    // MARK: - ROM transfer (opt-in, ephemeral)
+
+    /// The newest session for a game this device doesn't have, whose source device has offered the ROM
+    /// for transfer. Drives a "Transfer from Mac" affordance so a game started elsewhere can be brought
+    /// over. Nil when nothing's transferable. See About ▸ Handoff for the opt-in and privacy stance.
+    private(set) var transferOffer: (card: ContinuityCard, fileName: String)?
+
+    /// Offer a game's ROM so another of the user's devices lacking it can receive and import it — only
+    /// when the user opted in. Called from the publish path (a terminal moment). No-op otherwise.
+    func offerROMIfEnabled(game: Game) async {
+        guard AppSettings.transferEnabled else { return }
+        guard let data = try? Data(contentsOf: game.romURL) else { return }
+        let fileName = game.romURL.lastPathComponent
+        // Include our cached box art so the receiver shows matching cover without re-matching a
+        // (possibly cleaned/region-less) title against the thumbnail repo.
+        let coverPNG = try? Data(contentsOf: AppPaths.coversDir.appendingPathComponent("\(game.romHash).png"))
+        try? await coordinator.publishROM(romHash: game.romHash, fileName: fileName, coverPNG: coverPNG, data: data)
+    }
+
+    /// Recompute `transferOffer`: the newest session for a game NOT in `games` that has a ROM offer,
+    /// excluding this device's own sessions. Cheap — never downloads the ROM bytes.
+    func refreshTransferOffer(for games: [Game]) async {
+        let owned = Set(games.map(\.romHash))
+        let cards = (try? await coordinator.allCards()) ?? []
+        var best: (card: ContinuityCard, fileName: String)?
+        for card in cards where !owned.contains(card.metadata.romHash)
+            && card.metadata.deviceName != UIDevice.current.name {
+            guard let fileName = try? await coordinator.romOffer(forRomHash: card.metadata.romHash)
+            else { continue }
+            if best == nil || card.metadata.timestamp > best!.card.metadata.timestamp {
+                best = (card, fileName)
+            }
+        }
+        transferOffer = best
+    }
+
+    /// Download the offered ROM bytes for a transfer, or nil if the offer vanished.
+    func downloadROM(romHash: String) async -> Data? {
+        try? await coordinator.fetchROM(forRomHash: romHash)
+    }
+
+    /// Download the sender's box art for a transfer, or nil if none was included.
+    func downloadROMCover(romHash: String) async -> Data? {
+        try? await coordinator.fetchROMCover(forRomHash: romHash)
+    }
+
+    /// Drop the ROM offer once it's been received here, so the cloud copy stays ephemeral.
+    func clearROM(romHash: String) async {
+        try? await coordinator.clearROM(romHash: romHash)
+        if transferOffer?.card.metadata.romHash == romHash { transferOffer = nil }
     }
 }
