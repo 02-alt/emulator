@@ -187,10 +187,10 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = JLR4F273N8;
 				"CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]" = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Encore;
+				INFOPLIST_KEY_CFBundleDisplayName = "Encore GBA";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save game screenshots to your photo library.";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -216,10 +216,10 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = JLR4F273N8;
 				"CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]" = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Encore;
+				INFOPLIST_KEY_CFBundleDisplayName = "Encore GBA";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save game screenshots to your photo library.";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
