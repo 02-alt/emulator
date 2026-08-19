@@ -8,7 +8,7 @@
   provisioning below (see scripts/archive-ios.sh step 3 for the iOS side — same container):
 
     1. Apple Developer portal → Identifiers → your macOS app id → enable the iCloud capability and
-       assign the container `iCloud.com.comalada.gbaemulator` (the SAME one the iOS app uses,
+       assign the container `iCloud.com.buildtoberemembered.encore` (the SAME one the iOS app uses,
        so both devices share one CloudKit database).
     2. Create a macOS provisioning profile that includes that container; CloudKit for a directly-
        distributed (Developer ID) Mac app needs the profile embedded, not just these entitlements.
@@ -24,7 +24,7 @@
 <dict>
 	<key>com.apple.developer.icloud-container-identifiers</key>
 	<array>
-		<string>iCloud.com.comalada.gbaemulator</string>
+		<string>iCloud.com.buildtoberemembered.encore</string>
 	</array>
 	<key>com.apple.developer.icloud-services</key>
 	<array>

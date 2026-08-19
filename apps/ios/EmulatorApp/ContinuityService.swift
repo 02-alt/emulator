@@ -20,7 +20,7 @@ final class ContinuityService {
     static let coreVersion = MGBACore.coreVersion
 
     /// The app's CloudKit container (must match the iCloud entitlement in EmulatorApp.entitlements).
-    static let cloudContainer = "iCloud.com.comalada.gbaemulator"
+    static let cloudContainer = "iCloud.com.buildtoberemembered.encore"
 
     /// Whether it's safe to construct the CloudKit store. `CKContainer(identifier:)` *traps* (an
     /// uncatchable SIGTRAP) when the container isn't provisioned in the signed app — which is always

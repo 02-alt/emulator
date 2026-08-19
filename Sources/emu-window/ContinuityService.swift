@@ -39,7 +39,7 @@ final class ContinuityService {
     static let coreVersion = MGBACore.coreVersion
 
     /// Shared with the iOS app's iCloud entitlement — same container == same private DB.
-    static let cloudContainer = "iCloud.com.comalada.gbaemulator"
+    static let cloudContainer = "iCloud.com.buildtoberemembered.encore"
 
     /// This Mac's name, so sessions it eventually publishes read as "Continue from <Mac>". Also used
     /// to filter our own sessions out of the card (we don't offer to continue where we already are).
