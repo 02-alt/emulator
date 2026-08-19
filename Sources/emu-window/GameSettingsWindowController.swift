@@ -73,9 +73,11 @@ private final class GameSettingsView: NSView {
     private let scroll = NSScrollView()
     private let form = NSStackView()
     private let chooseBtn = PixelActionButton(title: "Choose Image…")
+    private let findBtn = PixelActionButton(title: "Find Cover Online")
     private let revertBtn = PixelActionButton(title: "Use Downloaded Art")
     private let autoBtn = PixelActionButton(title: "Auto Crop")
     private let resetBtn = PixelActionButton(title: "Reset Crop")
+    private let covers = CoverArtService()
     private let cancelBtn = PixelActionButton(title: "Cancel")
     private let saveBtn = PixelActionButton(title: "Save", prominent: true)
 
@@ -137,6 +139,7 @@ private final class GameSettingsView: NSView {
         buildForm()
 
         chooseBtn.onClick = { [weak self] in self?.chooseImage() }
+        findBtn.onClick = { [weak self] in self?.findCoverOnline() }
         revertBtn.onClick = { [weak self] in self?.useDownloadedArt() }
         autoBtn.onClick = { [weak self] in self?.autoCrop() }
         resetBtn.onClick = { [weak self] in self?.cropView.resetCrop() }
@@ -174,10 +177,15 @@ private final class GameSettingsView: NSView {
         // COVER ---------------------------------------------------------------
         addHeader("Cover")
         fullWidth(cropView, height: 240)
-        let coverButtons = NSStackView(views: [chooseBtn, revertBtn, autoBtn, resetBtn])
-        coverButtons.orientation = .horizontal
-        coverButtons.spacing = DS.Space.sm
-        form.addArrangedSubview(coverButtons)
+        // Two rows so the fifth button doesn't overflow the sheet: sourcing the image, then cropping it.
+        let sourceButtons = NSStackView(views: [chooseBtn, findBtn, revertBtn])
+        sourceButtons.orientation = .horizontal
+        sourceButtons.spacing = DS.Space.sm
+        form.addArrangedSubview(sourceButtons)
+        let cropButtons = NSStackView(views: [autoBtn, resetBtn])
+        cropButtons.orientation = .horizontal
+        cropButtons.spacing = DS.Space.sm
+        form.addArrangedSubview(cropButtons)
         addHint("Drag inside the frame to reposition, drag a corner to resize. The crop is locked to the "
             + "cartridge label shape, so what you frame is what shows.")
 
@@ -300,6 +308,29 @@ private final class GameSettingsView: NSView {
         cropView.setImage(image, initialCrop: nil)
         refreshButtons()
         autoCrop()
+    }
+
+    /// Look up this game's box art in the online libretro-thumbnails repos (matched on the ROM's
+    /// original filename, per system) and, on a hit, load it into the cropper as the working source.
+    /// `force` re-downloads so a manual retry isn't served a stale/previously-missed cache entry. The
+    /// button is disabled while the request is in flight; the outcome is surfaced as a toast.
+    private func findCoverOnline() {
+        findBtn.isEnabled = false
+        let stem = game.romFilenameStem, hash = game.romHash, system = game.system
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let url = await self.covers.fetchCover(forStem: stem, hash: hash, system: system, force: true)
+            self.findBtn.isEnabled = true
+            guard let url, let image = NSImage(contentsOf: url) else {
+                Toast.show(in: self.window, "No cover found online for this title.", style: .error)
+                return
+            }
+            self.sourcePath = url.path
+            self.cropView.setImage(image, initialCrop: nil)
+            self.refreshButtons()
+            self.autoCrop()
+            Toast.show(in: self.window, "Cover downloaded.", style: .success)
+        }
     }
 
     /// Suggest a crop from the image's salient region (Vision), off the main thread so the UI stays

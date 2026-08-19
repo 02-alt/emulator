@@ -127,8 +127,8 @@ final class AmbientPlayer {
     /// Decode `resource` (capped to `maxLoopSeconds`), match it to `target`, and crossfade it into a
     /// seamless loop.
     private static func loadSeamlessLoop(resource: String, target: AVAudioFormat) -> AVAudioPCMBuffer? {
-        guard let url = Bundle.module.url(forResource: resource, withExtension: "mp3", subdirectory: "ambience")
-                ?? Bundle.module.url(forResource: resource, withExtension: "mp3") else {
+        guard let url = Bundle.moduleResources?.url(forResource: resource, withExtension: "mp3", subdirectory: "ambience")
+                ?? Bundle.moduleResources?.url(forResource: resource, withExtension: "mp3") else {
             NSLog("AmbientPlayer: missing resource \(resource).mp3"); return nil
         }
         guard let file = try? AVAudioFile(forReading: url) else {

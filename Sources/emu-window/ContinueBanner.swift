@@ -14,7 +14,8 @@ final class ContinueBanner: NSView {
     private let leadBase: CGFloat = 8     // gap from the hover box's left edge to the cover
     private let trailBase: CGFloat = 14
     private let gapBase: CGFloat = 12     // cover → text
-    private let maxTitleWBase: CGFloat = 260  // long titles truncate rather than stretch the row
+    private let maxTitleWBase: CGFloat = 300  // long titles truncate rather than stretch the row
+    private let titlePadBase: CGFloat = 8     // slack past the measured title so its last glyph never clips
 
     /// Matches the shelf's `contentScale` so the row grows with the rest of the dashboard in fullscreen.
     /// The owner sets this before calling ``update(game:)``.
@@ -25,6 +26,7 @@ final class ContinueBanner: NSView {
     private var trailInset: CGFloat { trailBase * uiScale }
     private var gap: CGFloat { gapBase * uiScale }
     private var maxTitleW: CGFloat { maxTitleWBase * uiScale }
+    private var titlePad: CGFloat { titlePadBase * uiScale }
 
     /// How far the cover sits in from this view's left edge — the owner shifts the view left by this so
     /// the cover aligns with the content margin (the big title below starts at the same x).
@@ -62,8 +64,11 @@ final class ContinueBanner: NSView {
     }
     required init?(coder: NSCoder) { fatalError("not implemented") }
 
-    /// Point the row at a new last-played game — updates cover/title and recomputes ``measuredWidth``.
-    func update(game: Game) {
+    /// Point the row at a new game — updates cover/title and recomputes ``measuredWidth``. `eyebrow`
+    /// is the grey label above the title: "CONTINUE" for the local last-played game, or e.g.
+    /// "CONTINUE FROM IPHONE" when the row surfaces a cross-device Continuity session.
+    func update(game: Game, eyebrow eyebrowText: String = "CONTINUE") {
+        eyebrow.stringValue = eyebrowText
         eyebrow.font = DS.pixel((9 * uiScale).rounded())
         titleField.font = DS.pixel((13 * uiScale).rounded())
         titleField.stringValue = game.displayTitle
@@ -74,7 +79,9 @@ final class ContinueBanner: NSView {
             coverView.image = nil
             coverW = coverH
         }
-        let titleW = min(ceil(titleField.attributedStringValue.size().width), maxTitleW)
+        // Pad past the exact glyph width: NSTextField reserves a couple points of internal margin, so
+        // sizing the column to the bare measured width clips the last character ("Advance Wa…").
+        let titleW = min(ceil(titleField.attributedStringValue.size().width) + titlePad, maxTitleW)
         let eyebrowW = ceil(eyebrow.attributedStringValue.size().width)
         measuredWidth = leadInset + coverW + gap + max(titleW, eyebrowW) + trailInset
         needsLayout = true

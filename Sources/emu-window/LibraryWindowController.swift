@@ -12,10 +12,21 @@ final class LibraryWindowController: NSObject {
     private let covers = CoverArtService()
     private let dashboard = LibraryDashboardView()
 
+    // Reads cross-device Continuity sessions (e.g. from the iPhone) to offer "Continue from iPhone"
+    // in the shelf's Continue row. Read-only for now — the Mac doesn't publish its own sessions yet.
+    private let continuity = ContinuityService()
+
     private let slotStride = 1000   // slot bookkeeping for stable ordering (paging is gone)
 
     // The game plays *inside this window*, in place of the shelf — swapped back when the player exits.
     private var playSession: PlaySession?
+    private var playingGame: Game?   // the Game backing `playSession`, for Continuity publishing
+    // Publishes cross-device state when the app deactivates. nonisolated(unsafe) so the nonisolated
+    // deinit can remove it — it's only ever touched on the main thread (set in init, read in deinit).
+    nonisolated(unsafe) private var resignObserver: NSObjectProtocol?
+
+    /// Whether a game is currently running inside the library window (drives the app's terminate flush).
+    var hasActivePlay: Bool { playSession != nil }
     private var savedToolbar: NSToolbar?
     private var savedContentSize: NSSize?    // library window size, restored when the game exits
     private var savedMinSize: NSSize?
@@ -51,26 +62,38 @@ final class LibraryWindowController: NSObject {
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(dashboard)
         NSApp.activate(ignoringOtherApps: true)
-        checkForCrashReport()
+        presentLaunchNotices()
+    }
+
+    /// The one-time notices that greet a launch, in priority order so they never stack: a crash report
+    /// (if we died last run), then the "What's new" card (once per update), then an update offer (if a
+    /// newer build is out). Whichever shows first wins the screen; the rest defer to a later launch.
+    /// Deferred to the next run loop so they land after the window is fully on screen.
+    private func presentLaunchNotices() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.presentCrashReportIfNeeded() { return }
+            if WhatsNew.maybeShow(in: self.window) { return }
+            LaunchUpdatePrompt.checkAndPrompt(in: self.window)
+        }
     }
 
     /// If the app crashed on a previous run, surface a one-time, non-fatal notice offering the
-    /// diagnostic log. Deferred so it lands after the window is fully on screen.
-    private func checkForCrashReport() {
-        guard let report = CrashReporter.pendingReport() else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            AppAlert.present(in: self.window, symbol: "exclamationmark.triangle",
-                title: "The app closed unexpectedly last time",
-                message: "Sorry about that — your library and saves are safe. A diagnostic report was "
-                    + "saved; you can reveal it in Finder to keep or share it.",
-                actions: [
-                    AppAlert.Action(title: "Reveal Report") {
-                        NSWorkspace.shared.activateFileViewerSelecting([report])
-                    },
-                    AppAlert.Action(title: "OK", isDefault: true, isCancel: true),
-                ])
-        }
+    /// diagnostic log. Returns whether a report was pending (and thus a card shown).
+    @discardableResult
+    private func presentCrashReportIfNeeded() -> Bool {
+        guard let report = CrashReporter.pendingReport() else { return false }
+        AppAlert.present(in: window, symbol: "exclamationmark.triangle",
+            title: "The app closed unexpectedly last time",
+            message: "Sorry about that — your library and saves are safe. A diagnostic report was "
+                + "saved; you can reveal it in Finder to keep or share it.",
+            actions: [
+                AppAlert.Action(title: "Reveal Report") {
+                    NSWorkspace.shared.activateFileViewerSelecting([report])
+                },
+                AppAlert.Action(title: "OK", isDefault: true, isCancel: true),
+            ])
+        return true
     }
 
     /// The shelf's text/buttons dissolve over exactly the cart's **lift** (initial → centre position), so
@@ -123,6 +146,19 @@ final class LibraryWindowController: NSObject {
         menuInput.onRight = { [weak self] in self?.dashboard.moveSelection(by: 1) }
         menuInput.onSelect = { [weak self] in self?.dashboard.launchSelected() }
         menuInput.onSettings = { [weak self] in self?.showSettings() }
+
+        // When the user switches away from the app (e.g. Cmd-Tab to grab their phone) while a game's
+        // running, publish the current state so another device can pick it up. Debounced, since it's
+        // the natural "I'm switching devices" moment — the Mac keeps running, so the upload completes.
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.publishContinuity(immediate: false) }
+        }
+    }
+
+    deinit {
+        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
     }
 
     // MARK: - Data
@@ -140,6 +176,149 @@ final class LibraryWindowController: NSObject {
         let n = store.games.count
         window.title = "Library"
         window.subtitle = n == 0 ? "" : "\(n) game\(n == 1 ? "" : "s")"   // native titlebar subtitle
+        refreshContinueCard()
+    }
+
+    // MARK: - Cross-device Continuity
+
+    /// Ask CloudKit whether another device left a resumable session for a game we own, and if so point
+    /// the shelf's Continue row at it ("Continue from iPhone"). Cheap (metadata + thumbnail only) and
+    /// best-effort — no iCloud / no session just clears the card. Fetch is off the main actor; the UI
+    /// update lands back on it.
+    private func refreshContinueCard() {
+        let games = store.games
+        Task { [weak self] in
+            guard let self else { return }
+            if let hit = await continuity.newestResumable(in: games) {
+                dashboard.crossDeviceContinue = (
+                    game: hit.game,
+                    eyebrow: "CONTINUE FROM \(hit.deviceName.uppercased())",
+                    onResume: { [weak self] in self?.resumeCrossDevice(hit) }
+                )
+                return
+            }
+            // No session for a game we own — fall back to a transferable session (a game we lack whose
+            // source device has offered its ROM). Shown as a "Transfer from iPhone" card.
+            if let offer = await continuity.newestTransferOffer(excluding: games) {
+                dashboard.crossDeviceContinue = (
+                    game: displayGame(for: offer),
+                    eyebrow: "TRANSFER FROM \(offer.deviceName.uppercased())",
+                    onResume: { [weak self] in self?.transferAndResume(offer) }
+                )
+                return
+            }
+            dashboard.crossDeviceContinue = nil
+        }
+    }
+
+    /// A display-only `Game` for a transfer offer: no ROM on disk yet, just the title and (if present)
+    /// the card's thumbnail written out so the Continue row can show cover + title. The real Game is
+    /// created by `transferAndResume` after the ROM downloads and imports.
+    private func displayGame(for offer: CrossDeviceTransfer) -> Game {
+        var coverPath: String?
+        if let png = offer.card.thumbnailPNG {
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("transfer-\(offer.romHash).png")
+            if (try? png.write(to: url)) != nil { coverPath = url.path }
+        }
+        return Game(
+            title: offer.card.metadata.romTitle,
+            romFilenameStem: (offer.fileName as NSString).deletingPathExtension,
+            romPath: "",
+            romHash: offer.romHash,
+            coverPath: coverPath)
+    }
+
+    /// Accept a transfer: download the offered ROM, import it into the library, then resume the session
+    /// (or launch fresh if the savestate is an incompatible core version). The ROM offer is cleared from
+    /// iCloud on success so the cloud copy stays ephemeral. Falls back gracefully if the offer vanished.
+    private func transferAndResume(_ offer: CrossDeviceTransfer) {
+        Task { [weak self] in
+            guard let self else { return }
+            guard let romData = await continuity.downloadROM(romHash: offer.romHash) else {
+                Toast.show(in: window, "Couldn’t fetch the game from your other device.", style: .error)
+                refreshContinueCard()
+                return
+            }
+            // Write the downloaded ROM to a temp file with its original name, then run the normal import
+            // path (hash-dedupe, copy into the managed ROMs folder, place on the shelf).
+            let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(offer.fileName)
+            guard (try? romData.write(to: tmp)) != nil,
+                  let base = try? ROMImporter.makeGame(from: tmp),
+                  base.romHash == offer.romHash else {
+                Toast.show(in: window, "That transfer didn’t match the game.", style: .error)
+                return
+            }
+            var game = base
+            if let managed = copyIntoLibrary(tmp) { game.romPath = managed.path }
+            try? FileManager.default.removeItem(at: tmp)
+            place(&game)
+            reload()
+
+            // ROM is now local — retire the ROM offer so it doesn't linger in iCloud. The savestate
+            // *session* is intentionally left in place so the Continue card can resume it below.
+            await continuity.clearROM(romHash: offer.romHash)
+
+            // Confirm the arrival visibly rather than jumping straight into the game: a toast the user
+            // can actually read, plus `refreshContinueCard` re-points the shelf's Continue row at the
+            // freshly-imported game ("CONTINUE FROM <device>"). One more click resumes where they left
+            // off — the same two-step the iPhone side uses.
+            Toast.show(in: window, "\(game.displayTitle) — transferred from \(offer.deviceName)", style: .info)
+            refreshContinueCard()
+        }
+    }
+
+    /// Download the cross-device savestate and boot the game straight into it. On success the session
+    /// is cleared from iCloud so it isn't offered twice (this Mac now holds the live state). If the
+    /// download fails (offline, or the session was cleared elsewhere) we fall back to a normal launch.
+    private func resumeCrossDevice(_ hit: CrossDeviceContinue) {
+        Task { [weak self] in
+            guard let self else { return }
+            guard let state = await continuity.resumeState(romHash: hit.game.romHash) else {
+                launch(hit.game)   // nothing to resume — just play it normally
+                return
+            }
+            await continuity.clear(romHash: hit.game.romHash)
+            dashboard.crossDeviceContinue = nil
+            launch(hit.game, resumeState: state)
+        }
+    }
+
+    /// Publish the in-window game's current state for cross-device resume. `immediate` awaits the
+    /// upload (terminal moments: leaving the game); otherwise it's debounced (bursty app-deactivation).
+    /// No-op when nothing's playing or iCloud is unavailable.
+    private func publishContinuity(immediate: Bool) {
+        guard let session = playSession, let game = playingGame,
+              let snap = session.captureContinuitySnapshot() else { return }
+        if immediate {
+            Task {
+                await continuity.publish(game: game, state: snap.state,
+                                         thumbnailPNG: snap.thumbnailPNG, secondsPlayed: snap.seconds)
+                // Terminal moment — also offer this game's ROM for transfer, if the user opted in.
+                await continuity.offerROMIfEnabled(game: game)
+            }
+        } else {
+            continuity.schedulePublish(game: game, state: snap.state,
+                                       thumbnailPNG: snap.thumbnailPNG, secondsPlayed: snap.seconds)
+        }
+    }
+
+    /// Publish the running game and stop it on app termination — awaited (bounded by `timeout`) so a
+    /// "quit here, continue on iPhone" hand-off actually reaches iCloud without hanging the quit if the
+    /// network stalls. Called from `applicationShouldTerminate`.
+    func flushContinuityForTermination(timeout: Duration = .seconds(3)) async {
+        if let session = playSession, let game = playingGame,
+           let snap = session.captureContinuitySnapshot() {
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { await self.continuity.publish(
+                    game: game, state: snap.state,
+                    thumbnailPNG: snap.thumbnailPNG, secondsPlayed: snap.seconds) }
+                group.addTask { try? await Task.sleep(for: timeout) }
+                await group.next()   // return as soon as EITHER the upload finishes or the timeout fires
+                group.cancelAll()
+            }
+        }
+        saveActivePlay()
     }
 
     // MARK: - Import
@@ -241,7 +420,7 @@ final class LibraryWindowController: NSObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             if let url = await self.covers.fetchCover(
-                forStem: game.romFilenameStem, hash: game.romHash) {
+                forStem: game.romFilenameStem, hash: game.romHash, system: game.system) {
                 var updated = game
                 updated.coverPath = url.path
                 self.store.update(updated)
@@ -352,7 +531,7 @@ final class LibraryWindowController: NSObject {
         launch(game)
     }
 
-    private func launch(_ game: Game) {
+    private func launch(_ game: Game, resumeState: Data? = nil) {
         // The ROM file can go missing (moved/deleted since import) — don't crash trying to boot it.
         guard FileManager.default.isReadableFile(atPath: game.romPath) else {
             warn("ROM file not found",
@@ -380,14 +559,14 @@ final class LibraryWindowController: NSObject {
         guard launchCinematicEnabled, launchCinematic == nil,
               let tileFrame = dashboard.tileFrame(for: updated) else {
             SoundFX.shared.playCartridgeInsert()   // the cinematic plays its own seat cue when enabled
-            presentPlay(updated)
+            presentPlay(updated, resumeState: resumeState)
             return
         }
         dashboard.setLaunchTileHidden(true, for: updated)   // its copy is lifted by the cinematic
         dashboard.setLaunchChrome(hidden: true, duration: chromeDissolveDuration)
         let cinematic = LaunchCinematic(
             parent: window, game: updated, startFrame: tileFrame,
-            onPresentGame: { [weak self] in self?.presentPlay(updated) },
+            onPresentGame: { [weak self] in self?.presentPlay(updated, resumeState: resumeState) },
             onDone: { [weak self] in
                 self?.dashboard.setLaunchTileHidden(false, for: updated)
                 self?.dashboard.setLaunchChrome(hidden: false, duration: 0.2)
@@ -403,19 +582,21 @@ final class LibraryWindowController: NSObject {
     /// shelf via the footer LIBRARY button or Esc (``dismissPlay``). Returns the game screen's rect (in
     /// content-view coordinates) so the launch cinematic can morph the boot clip into it.
     @discardableResult
-    private func presentPlay(_ game: Game) -> CGRect {
+    private func presentPlay(_ game: Game, resumeState: Data? = nil) -> CGRect {
         let overrides = GameOverrides(
             filter: game.overrideFilter.flatMap { Settings.DisplayFilter(rawValue: $0) },
             speed: game.overrideSpeed,
             swapAB: game.overrideSwapAB)
         let session = PlaySession(romURL: game.romURL,
                                   title: "\(AppInfo.name) — \(game.displayTitle)",
-                                  overrides: overrides)
+                                  overrides: overrides,
+                                  resumeState: resumeState)
         session.onExit = { [weak self] in self?.dismissPlay() }
         session.onPlaytime = { [weak self] seconds in
             self?.recordPlaytime(gameID: game.id, seconds: seconds)
         }
         playSession = session
+        playingGame = game   // remembered for Continuity publishing on exit / deactivation / quit
 
         savedContentSize = window.contentRect(forFrameRect: window.frame).size   // remember shelf size
         savedMinSize = window.contentMinSize
@@ -427,13 +608,15 @@ final class LibraryWindowController: NSObject {
         window.contentView = session.view                     // enters Fill mode (game edge-to-edge)
         window.makeFirstResponder(session.keyView)
 
-        // The player fills the window (Fill mode). Lock the window to the GBA's 3:2 and default it to
-        // a 3:2 size so the game fills edge-to-edge with no letterbox bars — and stays bar-free on
-        // resize. The shelf's own size is restored on exit.
+        // The player fills the window (Fill mode). Lock the window to the game's native aspect (3:2 for
+        // GBA, 10:9 for Game Boy / Color) and default it to that shape so the game fills edge-to-edge
+        // with no letterbox bars — and stays bar-free on resize. The shelf's own size is restored on exit.
+        let aspect = game.system.screenAspect
         let w = savedContentSize?.width ?? 1040
-        window.contentMinSize = NSSize(width: 480, height: 320)
-        window.contentAspectRatio = NSSize(width: 3, height: 2)
-        window.setContentSize(NSSize(width: w, height: (w / 1.5).rounded()))
+        window.contentMinSize = NSSize(width: (320 * aspect).rounded(), height: 320)
+        window.contentAspectRatio = NSSize(width: game.system.screenSize.width,
+                                           height: game.system.screenSize.height)
+        window.setContentSize(NSSize(width: w, height: (w / aspect).rounded()))
 
         session.view.layoutSubtreeIfNeeded()   // lay the player out now so the screen rect is final
         // Default to edge-to-edge Fill (deferred so it wins over the launch cinematic's re-parenting).
@@ -447,8 +630,10 @@ final class LibraryWindowController: NSObject {
     /// Tear the running game down (saving state) and restore the shelf.
     private func dismissPlay() {
         guard let session = playSession else { return }
+        publishContinuity(immediate: true)   // hand this session off for cross-device resume (before teardown)
         session.saveAndStop()
         playSession = nil
+        playingGame = nil
 
         window.contentView = dashboard   // leaving Fill restores the native titlebar
         // Drop the 3:2 play lock and restore the shelf's size.

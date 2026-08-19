@@ -23,6 +23,8 @@ final class EmulationDriver: @unchecked Sendable {
     private let swapAB = Atomic<Bool>(false)      // swap the A/B buttons in the input merge
     private let rewinding = Atomic<Bool>(false)
     private let rewindEnabled = Atomic<Bool>(true)   // off = no history captured (saves CPU/memory)
+    private let runAhead = Atomic<Int>(0)            // 0 = off; N = display N frames ahead to cut input lag
+    private let framesRun = Atomic<Int>(0)           // total frames the core has advanced (for the stats overlay)
 
     // Rewind: a bounded ring of recent save states, captured on the emulation thread.
     private var rewindStates: [Data] = []
@@ -66,6 +68,13 @@ final class EmulationDriver: @unchecked Sendable {
     func setSwapAB(_ on: Bool) { swapAB.store(on, ordering: .relaxed) }
     func setRewinding(_ on: Bool) { rewinding.store(on, ordering: .relaxed) }
     func setRewindEnabled(_ on: Bool) { rewindEnabled.store(on, ordering: .relaxed) }
+    /// Frames of run-ahead (0 = off). Displays a future frame so input appears sooner — at the cost of
+    /// running `frames` extra frames + one state save/restore per displayed frame. Kept ≤ 2.
+    func setRunAhead(_ frames: Int) { runAhead.store(max(0, min(2, frames)), ordering: .relaxed) }
+
+    /// Total frames the core has advanced since launch. Sampled over time by the stats overlay to
+    /// derive the live emulation frame rate (and, from it, the % of full speed).
+    var framesRunCount: Int { framesRun.load(ordering: .relaxed) }
 
     func start() {
         guard thread == nil else { return }
@@ -157,6 +166,7 @@ final class EmulationDriver: @unchecked Sendable {
                 if let snapshot = rewindStates.popLast() {
                     try? core.loadState(snapshot)
                     core.runFrame()
+                    countFrame()
                     publishVideo()
                 }
                 usleep(16000)
@@ -185,12 +195,36 @@ final class EmulationDriver: @unchecked Sendable {
                 if a != 0 { held |= GBAButtons.b.rawValue }
                 if b != 0 { held |= GBAButtons.a.rawValue }
             }
-            core.setButtons(GBAButtons(rawValue: held))
-            core.runFrame()
-            publishVideo()
-            captureRewindSnapshot()
-
-            drainAudio(discard: turbo)   // audio is muted while turbo / fast-forwarding
+            let ahead = runAhead.load(ordering: .relaxed)
+            if ahead > 0 && !turbo {
+                // Run-ahead: commit one real frame (with audio), then run `ahead` more frames to
+                // display a future frame — so a button press shows up `ahead` frames sooner. The
+                // committed timeline is checkpointed and restored, so it still advances exactly one
+                // frame per iteration (audio pacing and rewind stay on the real timeline).
+                core.setButtons(GBAButtons(rawValue: held))
+                core.runFrame()
+                countFrame()
+                drainAudio(discard: false)              // the real frame's audio → the ring
+                if let checkpoint = try? core.saveState() {
+                    for _ in 0..<ahead {
+                        core.setButtons(GBAButtons(rawValue: held))
+                        core.runFrame()
+                        drainAudio(discard: true)        // future frames' audio is thrown away
+                    }
+                    publishVideo()                       // show the frame `ahead` into the future
+                    try? core.loadState(checkpoint)      // rewind the core to the committed state
+                } else {
+                    publishVideo()                       // save failed — just show the real frame
+                }
+                captureRewindSnapshot()
+            } else {
+                core.setButtons(GBAButtons(rawValue: held))
+                core.runFrame()
+                countFrame()
+                publishVideo()
+                captureRewindSnapshot()
+                drainAudio(discard: turbo)   // audio is muted while turbo / fast-forwarding
+            }
 
             // A finite speed multiplier (1.5× / 2×) is clocked to 60·mult fps here.
             if mult > 1.0 && !ff {
@@ -199,6 +233,12 @@ final class EmulationDriver: @unchecked Sendable {
                 if elapsed < target { usleep(UInt32((target - elapsed) / 1000)) }
             }
         }
+    }
+
+    /// Bump the run-frame counter (emulation thread only — single writer, so a plain load/store is
+    /// enough; the stats overlay reads it from the main thread).
+    private func countFrame() {
+        framesRun.store(framesRun.load(ordering: .relaxed) &+ 1, ordering: .relaxed)
     }
 
     /// Fill the producer buffer from the core and swap it in for the renderer (O(1) swap).

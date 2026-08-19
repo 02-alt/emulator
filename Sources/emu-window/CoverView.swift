@@ -224,7 +224,10 @@ final class CartridgeTileView: NSView {
         // No background panel — the cartridge itself floats on the canvas. The body is Liquid Glass;
         // the fetched cover, if any, sits in its label window.
         let art = tile.insetBy(dx: side * 0.04, dy: side * 0.04)
-        drawGBACartridge(in: art)
+        switch game.system {
+        case .gba: drawGBACartridge(in: art)
+        case .gbc: drawGBCCartridge(in: art)
+        }
 
         if game.favorite { drawFavoriteBadge(in: tile) }
     }
@@ -425,6 +428,72 @@ final class CartridgeTileView: NSView {
         notch.move(to: F(0.405, 0.90))
         notch.line(to: F(0.595, 0.90))
         notch.line(to: F(0.5, 0.96))
+        notch.close()
+        groundColor.setFill()
+        notch.fill()
+    }
+
+    /// A Game Boy / Game Boy Color cartridge: a near-square **portrait** shell with the console's
+    /// hallmarks — ribbed thumb grips in the top corners, a recessed grip groove across the top, a
+    /// large **square** label window for cover art, and a small ▽ insertion arrow at the foot. Same
+    /// Liquid-Glass body + dark recesses as the GBA cart, so the two read as one family of carts.
+    /// Drawn in flipped coords (y grows down).
+    private func drawGBCCartridge(in rect: CGRect) {
+        // Portrait body: a hair taller than wide, centered in the square art region.
+        let aspect: CGFloat = 0.90                    // width ÷ height
+        let bw = min(rect.width, rect.height * aspect)
+        let bh = bw / aspect
+        let boxL = rect.midX - bw / 2, boxT = rect.midY - bh / 2
+        func F(_ fx: CGFloat, _ fy: CGFloat) -> CGPoint {
+            CGPoint(x: boxL + fx * bw, y: boxT + fy * bh)
+        }
+        let bbox = CGRect(x: boxL, y: boxT, width: bw, height: bh)
+
+        // Shell body — a rounded rectangle in Liquid Glass.
+        let body = NSBezierPath(roundedRect: bbox, xRadius: bw * 0.06, yRadius: bw * 0.06)
+        fillGlass(body, in: bbox)
+
+        // Slot keys: the small dark notches cut into the top edge just inside each shoulder.
+        groundColor.setFill()
+        for nx in [CGFloat(0.05), CGFloat(0.95)] {
+            let slot = CGRect(x: F(nx, 0).x - bw * 0.007, y: boxT,
+                              width: bw * 0.014, height: bh * 0.05)
+            NSBezierPath(roundedRect: slot, xRadius: bw * 0.006, yRadius: bw * 0.006).fill()
+        }
+
+        // Ribbed thumb grips: a few short vertical ridges tucked into each top corner.
+        let ribs = NSBezierPath()
+        for base in [CGFloat(0.055), CGFloat(0.85)] {          // left group, right group
+            for i in 0..<4 {
+                let x = boxL + (base + CGFloat(i) * 0.030) * bw
+                ribs.move(to: CGPoint(x: x, y: boxT + bh * 0.055))
+                ribs.line(to: CGPoint(x: x, y: boxT + bh * 0.125))
+            }
+        }
+        ribs.lineWidth = max(1, bw * 0.010)
+        ribs.lineCapStyle = .round
+        groundColor.setStroke()
+        ribs.stroke()
+
+        // Thumb groove: a recessed horizontal pill across the top center, between the two grips.
+        let grooveH = bh * 0.075
+        let groove = CGRect(x: F(0.20, 0).x, y: boxT + bh * 0.045,
+                            width: (0.80 - 0.20) * bw, height: grooveH)
+        groundColor.setFill()
+        NSBezierPath(roundedRect: groove, xRadius: grooveH / 2, yRadius: grooveH / 2).fill()
+
+        // Label window — square (matches `GameSystem.gbc.coverAspect`), holds the cover art or the
+        // blank default label.
+        let winSide = bw * 0.68
+        let win = CGRect(x: bbox.midX - winSide / 2, y: boxT + bh * 0.25,
+                         width: winSide, height: winSide)
+        fillLabel(NSBezierPath(roundedRect: win, xRadius: bw * 0.03, yRadius: bw * 0.03), bounds: win)
+
+        // Insertion arrow: a shallow ▽ centered beneath the label.
+        let notch = NSBezierPath()
+        notch.move(to: F(0.44, 0.915))
+        notch.line(to: F(0.56, 0.915))
+        notch.line(to: F(0.5, 0.955))
         notch.close()
         groundColor.setFill()
         notch.fill()

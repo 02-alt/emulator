@@ -44,6 +44,19 @@ final class Settings {
         }
     }
 
+    /// Which corner the in-game performance overlay pins to (when ``showStats`` is on).
+    enum StatsCorner: Int, CaseIterable {
+        case topLeft = 0, topRight, bottomLeft, bottomRight
+        var title: String {
+            switch self {
+            case .topLeft: "Top Left"
+            case .topRight: "Top Right"
+            case .bottomLeft: "Bottom Left"
+            case .bottomRight: "Bottom Right"
+            }
+        }
+    }
+
     /// A remappable GBA input. Each maps to a single ``GBAButtons`` flag and ships with the classic
     /// default key (arrows = D-pad · Z=A · X=B · A=L · S=R · Return=Start · Right Shift=Select).
     enum PadInput: String, CaseIterable {
@@ -82,10 +95,14 @@ final class Settings {
         static let ambientScene = "audio.ambientScene"
         static let ambientVolume = "audio.ambientVolume"
         static let rewindEnabled = "emu.rewindEnabled"
+        static let runAhead = "emu.runAhead"
         static let autoResume = "emu.autoResume"
+        static let showStats = "emu.showStats"
+        static let statsCorner = "emu.statsCorner"
         static let keyBindings = "input.keyBindings"
         static let swapAB = "input.swapAB"
         static let joystickAsDpad = "input.joystickAsDpad"
+        static let trophyNotifications = "achievements.notifications"
     }
 
     private init() {
@@ -100,7 +117,10 @@ final class Settings {
             Key.ambientVolume: 0.6,
             Key.rewindEnabled: true,
             Key.autoResume: true,
+            Key.showStats: false,
+            Key.statsCorner: StatsCorner.topLeft.rawValue,
             Key.joystickAsDpad: true,
+            Key.trophyNotifications: true,
         ])
     }
 
@@ -148,10 +168,35 @@ final class Settings {
         set { defaults.set(newValue, forKey: Key.rewindEnabled); changed() }
     }
 
+    /// Run-ahead: display one frame into the future to cut input lag (~16ms), at a small CPU cost.
+    /// Off by default (opt-in).
+    var runAhead: Bool {
+        get { defaults.bool(forKey: Key.runAhead) }
+        set { defaults.set(newValue, forKey: Key.runAhead); changed() }
+    }
+
     /// Whether opening a game restores where you left off (suspend state), vs. booting fresh.
     var autoResume: Bool {
         get { defaults.bool(forKey: Key.autoResume) }
         set { defaults.set(newValue, forKey: Key.autoResume); changed() }
+    }
+
+    /// Whether to post a system notification when a RetroAchievement is unlocked.
+    var trophyNotifications: Bool {
+        get { defaults.bool(forKey: Key.trophyNotifications) }
+        set { defaults.set(newValue, forKey: Key.trophyNotifications); changed() }
+    }
+
+    /// Whether the in-game performance overlay (FPS · speed · draw rate) is shown in a corner.
+    var showStats: Bool {
+        get { defaults.bool(forKey: Key.showStats) }
+        set { defaults.set(newValue, forKey: Key.showStats); changed() }
+    }
+
+    /// Which corner the performance overlay pins to.
+    var statsCorner: StatsCorner {
+        get { StatsCorner(rawValue: defaults.integer(forKey: Key.statsCorner)) ?? .topLeft }
+        set { defaults.set(newValue.rawValue, forKey: Key.statsCorner); changed() }
     }
 
     // MARK: - Controls

@@ -67,7 +67,7 @@ enum DS {
     /// Departure Mono, registered once from the bundle. Falls back to the system monospaced
     /// font if registration ever fails (so the UI still renders, just without the pixel look).
     private static let registerOnce: Void = {
-        guard let url = Bundle.module.url(forResource: "DepartureMono-Regular", withExtension: "otf") else {
+        guard let url = Bundle.moduleResources?.url(forResource: "DepartureMono-Regular", withExtension: "otf") else {
             NSLog("DS: Departure Mono resource missing — falling back to system mono")
             return
         }

@@ -38,7 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// (no `.app` bundle / Info.plist), so there's no `CFBundleIconFile` to pick it up — we set
     /// `applicationIconImage` at launch instead. Harmless no-op if the resource is ever missing.
     private func applyDockIcon() {
-        guard let url = Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
+        guard let url = Bundle.moduleResources?.url(forResource: "AppIcon", withExtension: "icns"),
               let image = NSImage(contentsOf: url) else {
             NSLog("emu-window: AppIcon.icns resource missing — using default Dock icon")
             return
@@ -158,6 +158,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let gameID { self?.library?.recordPlaytime(gameID: gameID, seconds: seconds) }
         }
         playControllers.append(controller)
+    }
+
+    /// If a game's running inside the library window, defer termination briefly to publish its state
+    /// for cross-device resume ("quit on Mac, continue on iPhone"). Bounded by the flush's own timeout
+    /// so a stalled network can't hang the quit; otherwise quit immediately.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard library?.hasActivePlay == true else { return .terminateNow }
+        Task { @MainActor in
+            await library?.flushContinuityForTermination()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {

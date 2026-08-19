@@ -21,16 +21,19 @@ final class LibraryDashboardView: NSView {
     var onAddROMs: (() -> Void)?
 
     /// Which slice of the library the carousel shows, driven by the pull-up filter drawer.
-    enum Scope: Equatable { case all, hidden }
+    /// `.system` narrows to one console (only offered when the library holds more than one).
+    enum Scope: Equatable { case all, system(GameSystem), hidden }
 
     private var allGames: [Game] = []          // everything in the library
     private var games: [Game] = []             // the visible slice (after the scope filter)
     private var scope: Scope = .all
+    private var scopeOptions: [Scope] = [.all, .hidden]   // drawer segments, in order (mirrors the titles)
     private var tiles: [CartridgeTileView] = []
     private var actionBar: GlassBar?           // Apple-Music-style footer capsule of actions
     private var continueBanner: ContinueBanner?   // top-left "Continue" pill for the last-played game
     private var continueBannerVisible = false
     private let filterDrawer = FilterDrawer(titles: ["All Games", "Hidden"])
+    private let dropOverlay = DropTargetOverlay()   // shown only while a valid ROM drag hovers
     private var bandTracking: NSTrackingArea?   // reveals the drawer handle on bottom-bar hover
     private var carouselTracking: NSTrackingArea?  // mouse-moved over the carousel, to self-heal scales
     private var selected = 0
@@ -141,7 +144,8 @@ final class LibraryDashboardView: NSView {
         // Library scope, tucked into a pull-up drawer above the footer bar (see FilterDrawer).
         addSubview(filterDrawer)
         filterDrawer.onSelect = { [weak self] idx in
-            self?.setScope(idx == 1 ? .hidden : .all)
+            guard let self, self.scopeOptions.indices.contains(idx) else { return }
+            self.setScope(self.scopeOptions[idx])
         }
     }
     required init?(coder: NSCoder) { fatalError("not implemented") }
@@ -210,15 +214,45 @@ final class LibraryDashboardView: NSView {
 
     func setGames(_ games: [Game]) {
         allGames = games
+        refreshScopeOptions()
         applyFilter(resetSelection: false)
+    }
+
+    /// Rebuild the drawer's segments from what's in the library: **All Games**, then one segment per
+    /// console present (only when more than one console is present — a single-system library needs no
+    /// per-console filter), then **Hidden**. Keeps the current scope selected if it's still on offer,
+    /// otherwise falls back to All Games.
+    private func refreshScopeOptions() {
+        let systems = GameSystem.allCases.filter { sys in
+            allGames.contains { !$0.hidden && $0.system == sys }
+        }
+        var options: [Scope] = [.all]
+        if systems.count > 1 { options += systems.map { .system($0) } }
+        options.append(.hidden)
+
+        scopeOptions = options
+        if !options.contains(scope) { scope = .all }
+        let selectedIdx = options.firstIndex(of: scope) ?? 0
+        filterDrawer.setOptions(options.map(title(for:)), selected: selectedIdx)
+        needsLayout = true   // segment widths may have changed → re-center the drawer
+    }
+
+    /// Human label for a scope segment.
+    private func title(for scope: Scope) -> String {
+        switch scope {
+        case .all:            return "All Games"
+        case .system(let s):  return s.shortName
+        case .hidden:         return "Hidden"
+        }
     }
 
     /// Recompute the visible slice from the current scope, then rebuild the carousel. Hidden games are
     /// tucked away from every normal scope and only surface under the dedicated Hidden scope.
     private func applyFilter(resetSelection: Bool) {
         switch scope {
-        case .all:     games = allGames.filter { !$0.hidden }
-        case .hidden:  games = allGames.filter { $0.hidden }
+        case .all:            games = allGames.filter { !$0.hidden }
+        case .system(let s):  games = allGames.filter { !$0.hidden && $0.system == s }
+        case .hidden:         games = allGames.filter { $0.hidden }
         }
         selected = resetSelection ? 0 : min(selected, max(0, games.count - 1))
 
@@ -250,31 +284,51 @@ final class LibraryDashboardView: NSView {
             .max { ($0.lastPlayedAt ?? .distantPast) < ($1.lastPlayedAt ?? .distantPast) }
     }
 
-    /// Show/update the top-left Continue pill for the last-played game, creating it on first need and
-    /// hiding it when nothing's been played yet. Re-added each time so it stays above the carousel tiles.
+    /// A cross-device Continuity session (e.g. from the iPhone) to surface in the Continue row instead
+    /// of the local last-played game. When set, the row reads "CONTINUE FROM <device>" and its click
+    /// resumes that session; the owner (LibraryWindowController) fills this in from `ContinuityService`.
+    var crossDeviceContinue: (game: Game, eyebrow: String, onResume: () -> Void)? {
+        didSet { refreshContinueBanner(); layoutContinueBanner() }
+    }
+
+    /// Show/update the top-left Continue pill, creating it on first need and hiding it when there's
+    /// nothing to resume. Prefers a cross-device Continuity session over the local last-played game so
+    /// "Continue from iPhone" wins when one is available. Re-added each time so it stays above the tiles.
     private func refreshContinueBanner() {
-        guard let game = lastPlayedGame else {
+        let game: Game
+        let eyebrow: String
+        let action: () -> Void
+        if let x = crossDeviceContinue {
+            game = x.game
+            eyebrow = x.eyebrow
+            action = x.onResume
+        } else if let last = lastPlayedGame {
+            game = last
+            eyebrow = "CONTINUE"
+            action = { [weak self] in self?.onLaunch?(last) }
+        } else {
             continueBannerVisible = false
             continueBanner?.isHidden = true
             return
         }
         let banner = continueBanner ?? {
             let b = ContinueBanner()
-            b.onClick = { [weak self] in
-                guard let self, let g = self.lastPlayedGame else { return }
-                self.onLaunch?(g)
-            }
+            b.onClick = { [weak self] in self?.continueAction?() }
             continueBanner = b
             return b
         }()
         continueGame = game
+        continueEyebrow = eyebrow
+        continueAction = action
         banner.uiScale = contentScale
-        banner.update(game: game)
+        banner.update(game: game, eyebrow: eyebrow)
         banner.isHidden = false
         addSubview(banner)   // keep it front-most (tiles are re-added on each filter pass)
         continueBannerVisible = true
     }
     private var continueGame: Game?   // the game the Continue row currently points at
+    private var continueEyebrow = "CONTINUE"   // its eyebrow, kept so rescales redraw the right label
+    private var continueAction: (() -> Void)?  // what a click on the row does (launch, or cross-device resume)
 
     /// Set by the pull-up filter drawer (All Games / Hidden).
     func setScope(_ scope: Scope) {
@@ -446,6 +500,7 @@ final class LibraryDashboardView: NSView {
 
     override func layout() {
         super.layout()
+        if !dropOverlay.isHidden { dropOverlay.frame = bounds }   // track window resizes mid-drag
         // Frozen mid-dissolve so a stray layout pass can't reset the tiles' opacity and un-fade them.
         guard !launchDissolving else { return }
         layoutTiles(animated: false)
@@ -460,7 +515,7 @@ final class LibraryDashboardView: NSView {
         // Re-scale with the window (contentScale tracks size), recomputing the row's fonts/width.
         if banner.uiScale != contentScale, let game = continueGame {
             banner.uiScale = contentScale
-            banner.update(game: game)
+            banner.update(game: game, eyebrow: continueEyebrow)
         }
         // Shift left by the row's own leading inset so the cover lines up with the content margin
         // (the big title below starts at labelX).
@@ -687,12 +742,80 @@ final class LibraryDashboardView: NSView {
 
     // MARK: - Drag & drop
 
-    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { .copy }
+    /// True when the drag carries at least one supported ROM file — the only thing worth accepting, and
+    /// what gates both the drop-target highlight and the actual drop.
+    private func containsSupportedROM(_ sender: NSDraggingInfo) -> Bool {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        guard let urls = sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self], options: options) as? [URL] else { return false }
+        return urls.contains { ROMImporter.isSupported($0) }
+    }
+
+    /// Reveal (or hide) the full-shelf drop-target overlay, keeping it frontmost while shown.
+    private func showDropTarget(_ show: Bool) {
+        if show {
+            dropOverlay.frame = bounds
+            addSubview(dropOverlay, positioned: .above, relativeTo: nil)   // above the tiles + banner
+        }
+        dropOverlay.isHidden = !show
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard containsSupportedROM(sender) else { return [] }
+        showDropTarget(true)
+        return .copy
+    }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        containsSupportedROM(sender) ? .copy : []
+    }
+    override func draggingExited(_ sender: NSDraggingInfo?) { showDropTarget(false) }
+    override func draggingEnded(_ sender: NSDraggingInfo) { showDropTarget(false) }
+
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        showDropTarget(false)
         let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
         guard let urls = sender.draggingPasteboard.readObjects(
             forClasses: [NSURL.self], options: options) as? [URL], !urls.isEmpty else { return false }
         onDropURLs?(urls)
         return true
+    }
+}
+
+// MARK: - Drop-target overlay
+
+/// A full-bleed prompt shown over the shelf while a valid ROM drag hovers: a dimming scrim, a dashed
+/// rounded frame, and a centered "＋ Drop ROMs to add" caption — so a drop reads as an intentional,
+/// invited action rather than a blind guess.
+private final class DropTargetOverlay: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+    }
+    required init?(coder: NSCoder) { fatalError("not implemented") }
+
+    // Purely decorative — never intercept the drag (the dashboard is the drop destination).
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.black.withAlphaComponent(0.5).setFill()
+        bounds.fill()
+
+        let inset: CGFloat = 28
+        let frame = NSBezierPath(roundedRect: bounds.insetBy(dx: inset, dy: inset),
+                                 xRadius: DS.Radius.tile, yRadius: DS.Radius.tile)
+        frame.lineWidth = 2
+        frame.setLineDash([9, 7], count: 2, phase: 0)
+        DS.Color.hairlineStrong.setStroke()
+        frame.stroke()
+
+        // Centered plus glyph above the caption.
+        let plus = DS.Text.plain("+", size: 46, color: DS.Color.textPrimary)
+        let caption = DS.Text.label("Drop ROMs to add", size: 16, color: DS.Color.textPrimary)
+        let ps = plus.size(), cs = caption.size()
+        let gap: CGFloat = 8
+        let blockH = ps.height + gap + cs.height
+        let top = bounds.midY + blockH / 2
+        plus.draw(at: CGPoint(x: bounds.midX - ps.width / 2, y: top - ps.height))
+        caption.draw(at: CGPoint(x: bounds.midX - cs.width / 2, y: top - ps.height - gap - cs.height))
     }
 }

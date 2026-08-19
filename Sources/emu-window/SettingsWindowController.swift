@@ -309,8 +309,34 @@ final class SettingsView: NSView {
             stack.addArrangedSubview(row("Rewind", rewind))
             let resume = onOff(Settings.shared.autoResume) { Settings.shared.autoResume = $0 }
             stack.addArrangedSubview(row("Auto-Resume", resume))
+            let runAhead = onOff(Settings.shared.runAhead) { Settings.shared.runAhead = $0 }
+            stack.addArrangedSubview(row("Run Ahead", runAhead))
             stack.addArrangedSubview(hint("Rewind lets you hold R in-game to scrub back a few seconds. "
-                + "Auto-Resume reopens a game exactly where you left off."))
+                + "Auto-Resume reopens a game exactly where you left off. Run Ahead shaves a frame of "
+                + "input lag (~16 ms) for snappier controls, at a small CPU cost."))
+
+            stack.addArrangedSubview(header("Performance"))
+            let corner = PixelSegmented(titles: Settings.StatsCorner.allCases.map(\.title),
+                                        selected: Settings.shared.statsCorner.rawValue)
+            corner.onChange = { Settings.shared.statsCorner = Settings.StatsCorner(rawValue: $0) ?? .topLeft }
+            let cornerRow = row("Corner", corner)
+            cornerRow.isHidden = !Settings.shared.showStats   // the picker only matters when the overlay is on
+            let stats = onOff(Settings.shared.showStats) { [weak cornerRow] on in
+                Settings.shared.showStats = on
+                cornerRow?.isHidden = !on
+            }
+            stack.addArrangedSubview(row("Stats Overlay", stats))
+            stack.addArrangedSubview(cornerRow)
+            stack.addArrangedSubview(hint("Shows a small live readout — frame rate, % of full speed, and "
+                + "on-screen draw rate — pinned to a corner while you play."))
+
+            stack.addArrangedSubview(header("Handoff"))
+            let transfer = onOff(ContinuityService.transferEnabled) { ContinuityService.transferEnabled = $0 }
+            stack.addArrangedSubview(row("Transfer Games Between My Devices", transfer))
+            stack.addArrangedSubview(hint("Continue a game on another of your devices even if it doesn’t have "
+                + "the game yet: Encore copies it over through your own private iCloud — never our servers "
+                + "— and deletes the copy the moment your other device receives it. Only turn this on for "
+                + "games you legally own. We don’t condone piracy."))
 
         case .achievements:
             stack.addArrangedSubview(header("RetroAchievements"))
@@ -332,6 +358,19 @@ final class SettingsView: NSView {
                 }
             })
 
+            stack.addArrangedSubview(header("Notifications"))
+            let notif = onOff(Settings.shared.trophyNotifications) { on in
+                Settings.shared.trophyNotifications = on
+                if on { TrophyNotifier.requestAuthorization() }
+            }
+            stack.addArrangedSubview(row("Trophy Notifications", notif))
+            stack.addArrangedSubview(hint("Get a banner when you unlock an achievement — macOS asks for "
+                + "permission the first time. (Live in-game unlock detection arrives with full "
+                + "RetroAchievements support; this is the notification it will use.)"))
+            stack.addArrangedSubview(PixelButton(title: "Send Test Notification") {
+                TrophyNotifier.sendTest()
+            })
+
         case .storage:
             stack.addArrangedSubview(header("Files"))
             stack.addArrangedSubview(PixelButton(title: "Reveal ROMs Folder") {
@@ -344,7 +383,7 @@ final class SettingsView: NSView {
                 Self.reveal(AppPaths.screenshotsDir)
             })
             stack.addArrangedSubview(hint("This is the app's own ROMs folder. Add a game and its ROM is "
-                + "copied here, or drop .gba files straight in — they show up in your library "
+                + "copied here, or drop .gba / .gbc / .gb files straight in — they show up in your library "
                 + "automatically. Battery saves, save states, and screenshots live alongside it."))
 
             stack.addArrangedSubview(header("Cache"))
@@ -381,6 +420,15 @@ final class SettingsView: NSView {
             stack.addArrangedSubview(checkButton)
             stack.addArrangedSubview(updateStatus)
             stack.addArrangedSubview(downloadButton)
+
+            // Privacy — what leaves the device, and (mostly) what doesn't.
+            stack.addArrangedSubview(header("Privacy"))
+            stack.addArrangedSubview(hint("Encore has no servers of its own — we never receive your games, "
+                + "saves, or any data about how you play. Everything you import stays on your Mac, or in "
+                + "your own private iCloud, which only your devices can read. The app does reach the "
+                + "internet for a few things — box art and update checks (GitHub), achievements if you "
+                + "enable them (RetroAchievements), and Handoff sync (Apple iCloud) — so those services "
+                + "see those requests under their own privacy policies. None of it comes to us."))
 
             // Attribution for the third-party work the app is built on (legally required, and deserved).
             stack.addArrangedSubview(header("Built On"))
