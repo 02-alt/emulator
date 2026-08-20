@@ -23,14 +23,19 @@ enum WhatsNew {
     /// The highlights of the latest update. Keep it short — three or four lines.
     static let items: [AppAlert.Feature] = [
         AppAlert.Feature(
+            symbol: "iphone.and.arrow.forward",
+            title: "Send games across devices",
+            detail: "Send a game — or a whole pack at once — to your other devices through your own private iCloud. It arrives ready to play, saves and all, then the copy is deleted."
+        ),
+        AppAlert.Feature(
             symbol: "arrow.down.circle",
-            title: "Update notices",
-            detail: "The app now checks for a newer version on launch and offers it to you here."
+            title: "Incoming games, made clear",
+            detail: "A distinct blue “Receive” card shows a game waiting to be brought over — separate from your Continue prompts, so you always know what’s a new game versus a resume."
         ),
         AppAlert.Feature(
             symbol: "sparkles",
-            title: "What’s New",
-            detail: "This card sums up each update’s highlights the first time you open the new build."
+            title: "A little more delight",
+            detail: "Cartridges launch toward the cloud when you send and drop away when you delete — each with its own sound."
         ),
     ]
 

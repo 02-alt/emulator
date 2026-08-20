@@ -25,6 +25,24 @@ struct ReleaseNote: Identifiable {
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
         ReleaseNote(
+            version: "1.1",
+            date: "August 2026",
+            headline: "Share your games across your devices.",
+            highlights: [
+                .init(symbol: "square.and.arrow.up",
+                      title: "Send games anywhere",
+                      detail: "Send a game — or a whole pack at once — to your other devices through your own private iCloud. It arrives ready to play, battery save and all, then the copy is deleted from iCloud."),
+                .init(symbol: "arrow.down.circle.fill",
+                      title: "See what's incoming",
+                      detail: "A clear card shows a game waiting for you; tap once to receive the whole pack. Games you already have are skipped automatically."),
+                .init(symbol: "magnifyingglass",
+                      title: "Search your library",
+                      detail: "Jump straight to any game by name."),
+                .init(symbol: "sparkles",
+                      title: "A little more delight",
+                      detail: "Cartridges streak toward the cloud when you send and drop away when you delete — each with its own sound — and Game Boy Color carts now stand tall on the shelf."),
+            ]),
+        ReleaseNote(
             version: "1.0",
             date: "August 2026",
             headline: "The first release of Encore GBA.",

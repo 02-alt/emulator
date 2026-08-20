@@ -16,7 +16,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${1:-${VERSION:-1.0.0}}"
+VERSION="${1:-${VERSION:-1.1.0}}"
 BUILD="$(date +%Y%m%d%H%M)"
 APP_NAME="Encore"
 EXE="emu-window"
