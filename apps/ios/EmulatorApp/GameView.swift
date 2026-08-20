@@ -128,8 +128,8 @@ struct GameView: View {
         }
         // In landscape, hide the title and let the toolbar float over the game (its buttons sit over
         // the side letterbox bars) so the picture can use the full screen height. Portrait keeps the
-        // solid bar.
-        .navigationTitle(isLandscape ? "" : game.displayTitle)
+        // solid bar but no title — the game name is redundant against the cover art.
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(DS.background, for: .navigationBar)
         .toolbarBackground(isLandscape ? .hidden : .visible, for: .navigationBar)
@@ -204,7 +204,7 @@ struct GameView: View {
             }
         } label: {
             Image(systemName: "forward.fill")
-                .foregroundStyle(speed > 1.0 ? Color.green : DS.textSecondary)
+                .foregroundStyle(speed > 1.0 ? DS.accent : DS.textSecondary)
         }
         .accessibilityLabel("Fast forward")
     }
@@ -212,7 +212,7 @@ struct GameView: View {
     private var audioButton: some View {
         Button { ambiencePopover = true } label: {
             Image(systemName: "speaker.wave.2.fill")
-                .foregroundStyle(ambientSceneRaw == AmbientScene.off.rawValue ? DS.textSecondary : Color.green)
+                .foregroundStyle(ambientSceneRaw == AmbientScene.off.rawValue ? DS.textSecondary : DS.accent)
         }
         .accessibilityLabel("Audio")
         .popover(isPresented: $ambiencePopover) { ambiencePopoverContent }
@@ -333,7 +333,7 @@ struct GameView: View {
                 Section("Audio") {
                     HStack {
                         Image(systemName: "speaker.fill").foregroundStyle(.secondary)
-                        Slider(value: $volume, in: 0...1).tint(.green)
+                        Slider(value: $volume, in: 0...1).tint(DS.accent)
                         Image(systemName: "speaker.wave.3.fill").foregroundStyle(.secondary)
                     }
                 }
@@ -345,7 +345,7 @@ struct GameView: View {
                     if ambientSceneRaw != AmbientScene.off.rawValue {
                         HStack {
                             Image(systemName: "cloud.rain").foregroundStyle(.secondary)
-                            Slider(value: ambientVolumeBinding, in: 0...1).tint(.green)
+                            Slider(value: ambientVolumeBinding, in: 0...1).tint(DS.accent)
                             Image(systemName: "cloud.heavyrain").foregroundStyle(.secondary)
                         }
                     }
@@ -397,7 +397,7 @@ struct GameView: View {
         }
         .padding()
         .frame(width: 300)
-        .tint(.green)
+        .tint(DS.accent)
         .presentationCompactAdaptation(.popover)
     }
 
@@ -474,7 +474,7 @@ private struct RewindRow: View {
             Spacer()
             if down { Text("Rewinding…").font(.footnote) }
         }
-        .foregroundStyle(down ? Color.green : Color.primary)
+        .foregroundStyle(down ? DS.accent : Color.primary)
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0)

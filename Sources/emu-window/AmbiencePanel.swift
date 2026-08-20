@@ -17,6 +17,9 @@ final class AmbiencePanelView: NSView {
         case .off:   "cloud"
         case .rain:  "cloud.rain.fill"
         case .storm: "cloud.bolt.rain.fill"
+        case .cabin: "airplane"
+        case .park:  "leaf.fill"
+        case .shore: "water.waves"
         }
     }
 

@@ -6,7 +6,7 @@ import LibraryKit
 /// carry a small pixel label beneath. When no cover art has been fetched, a generic cartridge
 /// silhouette stands in ("unknown cartridge"). Clicking asks the carousel to select-or-launch.
 @MainActor
-final class CartridgeTileView: NSView {
+class CartridgeTileView: NSView {
     let game: Game
     var onClick: ((Game) -> Void)?
     var onPlay: (() -> Void)?
@@ -17,6 +17,9 @@ final class CartridgeTileView: NSView {
     var onContextSettings: (() -> Void)?
     /// (targetDevice) — nil means broadcast to all the user's devices.
     var onContextSendTo: ((String?) -> Void)?
+    /// Open the multi-select send picker, pre-selecting this cartridge, so several games can be sent at
+    /// once. nil target is decided inside the picker.
+    var onContextSendMultiple: (() -> Void)?
     /// The user's other devices, read lazily when the right-click menu opens (sync), so "Send to →"
     /// can list them. Empty → a plain broadcast "Send to My Devices".
     var sendTargets: () -> [String] = { [] }
@@ -52,6 +55,21 @@ final class CartridgeTileView: NSView {
     required init?(coder: NSCoder) { fatalError("not implemented") }
 
     func setCover(_ image: NSImage?) { cover = image; needsDisplay = true }
+
+    /// Render a game's full cartridge (Liquid-Glass body with its cover in the label window) to a
+    /// standalone image, so the send flourish can fly the *cartridge* rather than a bare cover. Drawn
+    /// offscreen at `side`×`side` with a transparent background, the cart centered.
+    static func cartridgeImage(for game: Game, side: CGFloat = 260) -> NSImage {
+        let tile = CartridgeTileView(game: game)
+        tile.frame = CGRect(x: 0, y: 0, width: side, height: side)
+        let image = NSImage(size: NSSize(width: side, height: side))
+        // The tile draws in a flipped (top-left origin) space and its glass reads the context's flip;
+        // lock focus flipped so the snapshot matches — plain lockFocus() renders it upside down.
+        image.lockFocusFlipped(true)
+        tile.draw(tile.bounds)
+        image.unlockFocus()
+        return image
+    }
 
     /// Update selection state and animate the scale/dim transition (the carousel drives this).
     func setSelected(_ selected: Bool, animated: Bool) {
@@ -216,6 +234,8 @@ final class CartridgeTileView: NSView {
             sendItem.submenu = submenu
             menu.addItem(sendItem)
         }
+        // Pick several games to send in one go (opens a checklist, this cartridge pre-selected).
+        add("Send Multiple…", symbol: "square.on.square", #selector(contextSendMultiple))
         menu.addItem(.separator())
         add("Remove from Library", symbol: "trash", #selector(contextRemove))
         return menu
@@ -228,6 +248,7 @@ final class CartridgeTileView: NSView {
     @objc private func contextSettings() { onContextSettings?() }
     @objc private func contextSendBroadcast() { onContextSendTo?(nil) }
     @objc private func contextSendToDevice(_ sender: NSMenuItem) { onContextSendTo?(sender.representedObject as? String) }
+    @objc private func contextSendMultiple() { onContextSendMultiple?() }
 
     // MARK: - Hover
 

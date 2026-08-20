@@ -16,13 +16,16 @@ enum DisplayFilter: Int, CaseIterable, Identifiable {
 
 /// Ambient soundscape layered over gameplay (off / rain / storm).
 enum AmbientScene: Int, CaseIterable, Identifiable {
-    case off = 0, rain = 1, storm = 2
+    case off = 0, rain = 1, storm = 2, cabin = 3, park = 4, shore = 5
     var id: Int { rawValue }
     var title: String {
         switch self {
         case .off: return "Off"
         case .rain: return "Rain"
         case .storm: return "Storm"
+        case .cabin: return "Cabin"
+        case .park: return "Park"
+        case .shore: return "Shore"
         }
     }
     var resource: String? {
@@ -30,6 +33,9 @@ enum AmbientScene: Int, CaseIterable, Identifiable {
         case .off: return nil
         case .rain: return "rain"
         case .storm: return "storm"
+        case .cabin: return "cabin"
+        case .park: return "park"
+        case .shore: return "shore"
         }
     }
 }

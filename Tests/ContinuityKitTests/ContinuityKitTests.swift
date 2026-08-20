@@ -170,6 +170,27 @@ final class ContinuityKitTests: XCTestCase {
         XCTAssertEqual(cover, Data([9, 9]))
     }
 
+    func testROMOfferCarriesBatterySave() async throws {
+        // The player's cartridge save rides along with the ROM so the receiver continues their progress.
+        let store = InMemoryContinuityStore()
+        try await store.publishROM(romHash: "z", fileName: "Zelda.gba", coverPNG: nil, data: Data([1, 2, 3]))
+        try await store.publishROMBattery(romHash: "z", data: Data([4, 5, 6]))
+        let battery = try await store.fetchROMBattery(romHash: "z")
+        XCTAssertEqual(battery, Data([4, 5, 6]))
+        // Torn down with the offer, so the cloud copy of the save stays ephemeral too.
+        try await store.clearROM(romHash: "z")
+        let gone = try await store.fetchROMBattery(romHash: "z")
+        XCTAssertNil(gone)
+    }
+
+    func testROMBatteryNeedsAnOfferToAttachTo() async throws {
+        // No ROM offer → nowhere to attach the save; publishing it is a no-op, not a battery-only offer.
+        let store = InMemoryContinuityStore()
+        try await store.publishROMBattery(romHash: "orphan", data: Data([1]))
+        let battery = try await store.fetchROMBattery(romHash: "orphan")
+        XCTAssertNil(battery)
+    }
+
     func testROMOfferCoverIsOptional() async throws {
         let store = InMemoryContinuityStore()
         try await store.publishROM(romHash: "z", fileName: "Zelda.gba", coverPNG: nil, data: Data([1]))

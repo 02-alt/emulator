@@ -17,6 +17,8 @@ final class LibraryDashboardView: NSView {
     var onReveal: ((Game) -> Void)?
     /// (game, targetDevice) — targetDevice nil means broadcast to all the user's devices.
     var onContextSend: ((Game, String?) -> Void)?
+    /// Open the multi-select send picker with `Game` pre-selected — "Send Multiple…" in a cart's menu.
+    var onContextSendMultiple: ((Game) -> Void)?
     var onDropURLs: (([URL]) -> Void)?
     /// The user's other devices, cached by the controller and read when a tile's right-click menu
     /// opens, so "Send to →" can list them without an async hop mid-menu.
@@ -24,6 +26,8 @@ final class LibraryDashboardView: NSView {
 
     var onConfigure: (() -> Void)?    // opens Settings (not per-game)
     var onAddROMs: (() -> Void)?
+    /// Right-click "Dismiss" on the cross-device Continue/Transfer card — hides just the one showing.
+    var onCrossDeviceDismiss: (() -> Void)?
 
     /// Which slice of the library the carousel shows, driven by the pull-up filter drawer.
     /// `.system` narrows to one console (only offered when the library holds more than one).
@@ -94,6 +98,10 @@ final class LibraryDashboardView: NSView {
     private let titleToContentGapBase: CGFloat = 74
 
     private var bottomBarH: CGFloat { sc(bottomBarHBase) }        // footer band height
+    /// Lift the footer capsule off the very bottom edge so it isn't cramped against the window frame
+    /// (HIG breathing room) — applied to both the capsule's layout and its hover tracking so they stay
+    /// in sync.
+    private var footerBottomInset: CGFloat { sc(10) }
     private var carouselTopMin: CGFloat { sc(carouselTopMinBase) }   // top margin before we can center
     private var continueBannerH: CGFloat { sc(continueBannerHBase) }   // the Continue row's height
     private var continueBannerTop: CGFloat { sc(continueBannerTopBase) }   // its inset from the top edge
@@ -272,6 +280,7 @@ final class LibraryDashboardView: NSView {
             t.onContextRemove = { [weak self] in self?.onRemove?(game) }
             t.onContextSettings = { [weak self] in self?.onGameSettings?(game) }
             t.onContextSendTo = { [weak self] target in self?.onContextSend?(game, target) }
+            t.onContextSendMultiple = { [weak self] in self?.onContextSendMultiple?(game) }
             t.sendTargets = { [weak self] in self?.sendTargets ?? [] }
             t.onCarouselDrag = { [weak self] phase, dx in self?.handleCarouselDrag(phase, dx) }
             addSubview(t)
@@ -281,6 +290,12 @@ final class LibraryDashboardView: NSView {
         refreshDetail()
         refreshContinueBanner()
         layoutTiles(animated: false)
+        // A reload while the search overlay is up rebuilds the tiles/chrome (un-hiding them) and adds
+        // them above the overlay — re-hide the shelf and keep the overlay front-most.
+        if let overlay = searchOverlay {
+            setShelfContentHidden(true)
+            addSubview(overlay, positioned: .above, relativeTo: nil)
+        }
         needsDisplay = true
     }
 
@@ -294,7 +309,7 @@ final class LibraryDashboardView: NSView {
     /// A cross-device Continuity session (e.g. from the iPhone) to surface in the Continue row instead
     /// of the local last-played game. When set, the row reads "CONTINUE FROM <device>" and its click
     /// resumes that session; the owner (LibraryWindowController) fills this in from `ContinuityService`.
-    var crossDeviceContinue: (game: Game, eyebrow: String, onResume: () -> Void)? {
+    var crossDeviceContinue: (game: Game, eyebrow: String, isTransfer: Bool, onResume: () -> Void)? {
         didSet { refreshContinueBanner(); layoutContinueBanner() }
     }
 
@@ -304,14 +319,17 @@ final class LibraryDashboardView: NSView {
     private func refreshContinueBanner() {
         let game: Game
         let eyebrow: String
+        let isTransfer: Bool
         let action: () -> Void
         if let x = crossDeviceContinue {
             game = x.game
             eyebrow = x.eyebrow
+            isTransfer = x.isTransfer
             action = x.onResume
         } else if let last = lastPlayedGame {
             game = last
             eyebrow = "CONTINUE"
+            isTransfer = false
             action = { [weak self] in self?.onLaunch?(last) }
         } else {
             continueBannerVisible = false
@@ -326,15 +344,20 @@ final class LibraryDashboardView: NSView {
         }()
         continueGame = game
         continueEyebrow = eyebrow
+        continueIsTransfer = isTransfer
         continueAction = action
         banner.uiScale = contentScale
-        banner.update(game: game, eyebrow: eyebrow)
+        // Only a cross-device card (Continue/Transfer from another device) is dismissible; the local
+        // last-played row isn't — there's nothing to hide, it just reflects your history.
+        banner.onDismiss = (crossDeviceContinue != nil) ? { [weak self] in self?.onCrossDeviceDismiss?() } : nil
+        banner.update(game: game, eyebrow: eyebrow, transfer: isTransfer)
         banner.isHidden = false
         addSubview(banner)   // keep it front-most (tiles are re-added on each filter pass)
         continueBannerVisible = true
     }
     private var continueGame: Game?   // the game the Continue row currently points at
     private var continueEyebrow = "CONTINUE"   // its eyebrow, kept so rescales redraw the right label
+    private var continueIsTransfer = false     // whether the current row is an incoming transfer
     private var continueAction: (() -> Void)?  // what a click on the row does (launch, or cross-device resume)
 
     /// Set by the pull-up filter drawer (All Games / Hidden).
@@ -389,10 +412,12 @@ final class LibraryDashboardView: NSView {
         let items: [GlassBar.Item] = [
             .init(symbol: "play.fill", tooltip: "Play Cartridge", enabled: hasGame,
                   onClick: { [weak self] in if let g = self?.selectedGame { self?.onLaunch?(g) } }),
+            .init(symbol: "magnifyingglass", tooltip: "Search", enabled: hasGame,
+                  onClick: { [weak self] in self?.toggleSearch() }),
             .init(symbol: "slider.horizontal.3", tooltip: "Settings",
                   onClick: { [weak self] in self?.onConfigure?() }),
-            .init(symbol: "trash", tooltip: "Remove from Library", enabled: hasGame,
-                  onClick: { [weak self] in if let g = self?.selectedGame { self?.onRemove?(g) } }),
+            // Removing a game lives ONLY on the per-cartridge right-click menu (and the Delete key) —
+            // deliberately not in this footer bar, so it's never a stray click away.
             .init(symbol: "plus", tooltip: "Add ROMs",
                   onClick: { [weak self] in self?.onAddROMs?() }),
         ]
@@ -480,6 +505,10 @@ final class LibraryDashboardView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
+        // ⌘F opens (or closes) the search grid.
+        if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "f" {
+            toggleSearch(); return
+        }
         switch event.keyCode {
         case 123: moveSelection(by: -1)                // ←
         case 124: moveSelection(by: 1)                 // →
@@ -487,6 +516,49 @@ final class LibraryDashboardView: NSView {
         case 51, 117: removeSelected()                 // Delete / Fwd-delete
         default: super.keyDown(with: event)
         }
+    }
+
+    // MARK: - Search grid
+
+    private var searchOverlay: SearchGridView?
+
+    /// Show the search grid over the shelf, or dismiss it if it's already up (the ⌘F / footer toggle).
+    func toggleSearch() {
+        if searchOverlay != nil { closeSearch() } else { openSearch() }
+    }
+
+    private func openSearch() {
+        guard searchOverlay == nil, !allGames.isEmpty else { return }
+        let overlay = SearchGridView(games: allGames)
+        overlay.frame = bounds
+        overlay.autoresizingMask = [.width, .height]
+        overlay.onLaunch = { [weak self] game in self?.onLaunch?(game) }
+        overlay.onClose = { [weak self] in self?.closeSearch() }
+        addSubview(overlay, positioned: .above, relativeTo: nil)   // above the tiles + banner
+        // Hide the shelf entirely behind the overlay: the selected carousel tile sets a high
+        // layer.zPosition (which composites *over* the overlay), and the side tiles' tracking areas
+        // still fire under the pointer (lighting them up as dim ghosts). Hiding them stops both.
+        setShelfContentHidden(true)
+        searchOverlay = overlay
+        overlay.focusSearch()
+    }
+
+    private func closeSearch() {
+        searchOverlay?.removeFromSuperview()
+        searchOverlay = nil
+        setShelfContentHidden(false)
+        window?.makeFirstResponder(self)
+    }
+
+    /// Hide (or restore) everything the shelf draws — the cartridge tiles, the Continue pill, the
+    /// footer bar, the filter drawer, and the custom-drawn detail panel — so the search overlay sits
+    /// over a clean black canvas with nothing bleeding through from behind.
+    private func setShelfContentHidden(_ hidden: Bool) {
+        tiles.forEach { $0.isHidden = hidden }
+        continueBanner?.isHidden = hidden || !continueBannerVisible
+        actionBar?.isHidden = hidden
+        filterDrawer.isHidden = hidden
+        needsDisplay = true   // drawDetail() bails out while the overlay is up
     }
 
     // MARK: - Controller / keyboard navigation
@@ -522,7 +594,7 @@ final class LibraryDashboardView: NSView {
         // Re-scale with the window (contentScale tracks size), recomputing the row's fonts/width.
         if banner.uiScale != contentScale, let game = continueGame {
             banner.uiScale = contentScale
-            banner.update(game: game, eyebrow: continueEyebrow)
+            banner.update(game: game, eyebrow: continueEyebrow, transfer: continueIsTransfer)
         }
         // Shift left by the row's own leading inset so the cover lines up with the content margin
         // (the big title below starts at labelX).
@@ -599,7 +671,7 @@ final class LibraryDashboardView: NSView {
     private func layoutPrompts() {
         guard let bar = actionBar else { return }
         let w = bar.measuredWidth, h = bar.measuredHeight
-        let barY = bounds.height - bottomBarH / 2 - h / 2
+        let barY = bounds.height - bottomBarH / 2 - h / 2 - footerBottomInset
         bar.frame = CGRect(x: (bounds.width - w) / 2, y: barY, width: w, height: h)
         bar.needsLayout = true
 
@@ -615,7 +687,7 @@ final class LibraryDashboardView: NSView {
         if let bandTracking { removeTrackingArea(bandTracking) }
         let barW = actionBar?.measuredWidth ?? 220
         let barH: CGFloat = 48
-        let barY = bounds.height - bottomBarH / 2 - barH / 2
+        let barY = bounds.height - bottomBarH / 2 - barH / 2 - footerBottomInset
         let handleZone: CGFloat = 36          // just enough room above the bar for the reveal handle
         let regionW = max(barW, filterDrawer.preferredWidth) + 24
         let top = barY - handleZone
@@ -646,6 +718,7 @@ final class LibraryDashboardView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         DS.Color.background.setFill()
         dirtyRect.fill()
+        guard searchOverlay == nil else { return }   // the search overlay owns the screen
         drawDetail()
     }
 

@@ -136,6 +136,7 @@ final class LibraryWindowController: NSObject {
         dashboard.onToggleHidden = { [weak self] in self?.toggleHidden($0) }
         dashboard.onReveal = { [weak self] in self?.revealROM($0) }
         dashboard.onContextSend = { [weak self] game, target in self?.sendToDevices(game, target: target) }
+        dashboard.onContextSendMultiple = { [weak self] game in self?.presentSendPicker(preselect: game) }
         dashboard.onDropURLs = { [weak self] in self?.importURLs($0) }
         dashboard.onAddROMs = { [weak self] in self?.addGames() }
         dashboard.onConfigure = { [weak self] in self?.showSettings() }
@@ -156,10 +157,25 @@ final class LibraryWindowController: NSObject {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.publishContinuity(immediate: false) }
         }
+
+        // Live refresh: re-check iCloud every 10s while the shelf is up, so a game sent from the phone
+        // appears on its own without needing to switch focus (mirrors the iOS library's polling). Paused
+        // while a game plays inside this window.
+        continuityPoll = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.playSession == nil else { return }
+                self.refreshContinueCard()
+            }
+        }
     }
+
+    /// Polls iCloud for incoming shares while the library shelf is showing. nonisolated(unsafe) so the
+    /// nonisolated deinit can invalidate it — only ever touched on the main thread.
+    nonisolated(unsafe) private var continuityPoll: Timer?
 
     deinit {
         if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+        continuityPoll?.invalidate()
     }
 
     // MARK: - Data
@@ -192,26 +208,58 @@ final class LibraryWindowController: NSObject {
             guard let self else { return }
             // Cache the addressable devices so a tile's right-click "Send to →" can list them synchronously.
             dashboard.sendTargets = await continuity.otherDeviceNames()
-            if let hit = await continuity.newestResumable(in: games) {
-                dashboard.crossDeviceContinue = (
-                    game: hit.game,
-                    eyebrow: "CONTINUE FROM \(hit.deviceName.uppercased())",
-                    onResume: { [weak self] in self?.resumeCrossDevice(hit) }
-                )
-                return
-            }
-            // No session for a game we own — fall back to a transferable session (a game we lack whose
-            // source device has offered its ROM). Shown as a "Transfer from iPhone" card.
-            if let offer = await continuity.newestTransferOffer(excluding: games) {
+            dashboard.onCrossDeviceDismiss = { [weak self] in self?.dismissCurrentCrossDevice() }
+            // Prefer an incoming TRANSFER (a game you don't have yet, waiting to be received) over a
+            // Continue prompt — both share the shelf's single cross-device row, and receiving a new game
+            // is the actionable, one-time event. The Continue card returns once the transfer is accepted
+            // (it imports + clears the offer) or dismissed.
+            if let offer = await continuity.newestTransferOffer(excluding: games),
+               !isDismissed(romHash: offer.card.metadata.romHash, at: offer.card.metadata.timestamp) {
+                currentCrossDeviceKey = Self.crossKey(offer.card.metadata.romHash, offer.card.metadata.timestamp)
                 dashboard.crossDeviceContinue = (
                     game: displayGame(for: offer),
-                    eyebrow: "TRANSFER FROM \(offer.deviceName.uppercased())",
+                    eyebrow: "RECEIVE FROM \(offer.deviceName.uppercased())",
+                    isTransfer: true,
                     onResume: { [weak self] in self?.transferAndResume(offer) }
                 )
                 return
             }
+            // Otherwise a resumable session for a game we own, from another device → "Continue from …".
+            if let hit = await continuity.newestResumable(in: games),
+               !isDismissed(romHash: hit.card.metadata.romHash, at: hit.card.metadata.timestamp) {
+                currentCrossDeviceKey = Self.crossKey(hit.card.metadata.romHash, hit.card.metadata.timestamp)
+                dashboard.crossDeviceContinue = (
+                    game: hit.game,
+                    eyebrow: "CONTINUE FROM \(hit.deviceName.uppercased())",
+                    isTransfer: false,
+                    onResume: { [weak self] in self?.resumeCrossDevice(hit) }
+                )
+                return
+            }
+            currentCrossDeviceKey = nil
             dashboard.crossDeviceContinue = nil
         }
+    }
+
+    /// Cross-device cards the user has dismissed for this run (keyed by game + session time), so a card
+    /// stays hidden once waved away — but a *newer* session for the same game (newer timestamp → new key)
+    /// surfaces again. Not persisted: a relaunch offers everything afresh.
+    private var dismissedCrossDevice = Set<String>()
+    /// Key of the card currently on the shelf, so "Dismiss" knows which one to hide.
+    private var currentCrossDeviceKey: String?
+
+    private static func crossKey(_ romHash: String, _ timestamp: Date) -> String {
+        "\(romHash)|\(timestamp.timeIntervalSince1970)"
+    }
+    private func isDismissed(romHash: String, at timestamp: Date) -> Bool {
+        dismissedCrossDevice.contains(Self.crossKey(romHash, timestamp))
+    }
+
+    /// Hide the cross-device card currently showing (right-click ▸ Dismiss), then re-evaluate so any
+    /// other pending session/transfer takes its place — or the local last-played row does.
+    private func dismissCurrentCrossDevice() {
+        if let key = currentCrossDeviceKey { dismissedCrossDevice.insert(key) }
+        refreshContinueCard()
     }
 
     /// A display-only `Game` for a transfer offer: no ROM on disk yet, just the title and (if present)
@@ -257,6 +305,14 @@ final class LibraryWindowController: NSObject {
             try? FileManager.default.removeItem(at: tmp)
             place(&game)   // fetchArt re-downloads the same box art for the shelf; the cover below is for the flourish
             reload()
+
+            // Land the sender's cartridge save so the game opens on their actual progress rather than a
+            // blank cartridge. This Mac didn't own the game, so there's nothing to overwrite. Fetch
+            // before clearing the offer — clearROM deletes the whole record.
+            if let battery = await continuity.downloadROMBattery(romHash: offer.romHash), !battery.isEmpty {
+                let store = SaveStore(romURL: game.romURL)
+                store.write(battery, to: store.batteryURL)
+            }
 
             // ROM is now local — retire the ROM offer so it doesn't linger in iCloud. The savestate
             // *session* is intentionally left in place so the Continue card can resume it afterward.
@@ -316,6 +372,7 @@ final class LibraryWindowController: NSObject {
     }
 
     private func performSend(_ game: Game, target: String?) {
+        SendFlourish.play(in: window, carts: [CartridgeTileView.cartridgeImage(for: game)])
         Task { [weak self] in
             guard let self else { return }
             let ok = await continuity.offerROM(game: game, targetDevice: target)
@@ -324,6 +381,64 @@ final class LibraryWindowController: NSObject {
                        ok ? "\(game.displayTitle) — sent to \(dest)"
                           : "Couldn’t send — iCloud isn’t available right now.",
                        style: ok ? .info : .error)
+        }
+    }
+
+    /// Open the multi-select send picker over the shelf, listing the whole library with `preselect`
+    /// checked. Confirming offers every chosen game to the user's other devices through the same
+    /// private-iCloud transfer as the single-game "Send" — same ownership consent, one summary toast.
+    private func presentSendPicker(preselect: Game) {
+        SendPicker.present(in: window,
+                           games: sortedGames,
+                           preselect: preselect,
+                           targets: dashboard.sendTargets) { [weak self] games, target in
+            self?.sendToDevices(games, target: target)
+        }
+    }
+
+    /// Batch "Send to My Devices": the same ownership consent as the single-game path (asked once, then
+    /// remembered), then offer each chosen game.
+    private func sendToDevices(_ games: [Game], target: String?) {
+        guard !games.isEmpty else { return }
+        guard ContinuityService.transferEnabled else {
+            let send = AppAlert.Action(title: "Send", isDefault: true) { [weak self] in
+                ContinuityService.transferEnabled = true
+                self?.performSend(games, target: target)
+            }
+            let cancel = AppAlert.Action(title: "Cancel", isCancel: true)
+            let shown = AppAlert.present(
+                in: window,
+                symbol: "iphone.and.arrow.forward",
+                title: "Send to your devices?",
+                message: "This copies the games to your other devices through your own private iCloud — "
+                    + "never our servers — so you can pick them up there. Only send games you legally own.",
+                actions: [cancel, send])
+            if !shown {
+                ContinuityService.transferEnabled = true
+                performSend(games, target: target)
+            }
+            return
+        }
+        performSend(games, target: target)
+    }
+
+    private func performSend(_ games: [Game], target: String?) {
+        SendFlourish.play(in: window, carts: games.prefix(3).map { CartridgeTileView.cartridgeImage(for: $0) })
+        Task { [weak self] in
+            guard let self else { return }
+            let dest = target ?? "your devices"
+            Toast.show(in: window,
+                       "Sending \(games.count) game\(games.count == 1 ? "" : "s") to \(dest)…",
+                       symbol: "iphone.and.arrow.forward", style: .info)
+            var sent = 0
+            for game in games where await continuity.offerROM(game: game, targetDevice: target) { sent += 1 }
+            let ok = sent == games.count
+            Toast.show(in: window,
+                       ok ? "Sent \(sent) game\(sent == 1 ? "" : "s") to \(dest)"
+                          : sent == 0 ? "Couldn’t send — iCloud isn’t available right now."
+                                      : "Sent \(sent) of \(games.count) — some couldn’t reach iCloud.",
+                       symbol: ok ? "checkmark.circle" : nil,
+                       style: ok ? .success : .error)
         }
     }
 
@@ -555,6 +670,16 @@ final class LibraryWindowController: NSObject {
         alert.buttons.first?.hasDestructiveAction = true
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
+        // Drop the cartridge out of its slot (matching the send flourish) with a soft power-down cue,
+        // captured *before* the reload re-lays the shelf. `tileFrame` is in the dashboard's flipped
+        // space; convert to the content view's non-flipped (y-up) coords for the overlay.
+        if let tf = dashboard.tileFrame(for: game) {
+            let rect = CGRect(x: tf.minX, y: dashboard.bounds.height - tf.maxY,
+                              width: tf.width, height: tf.height)
+            DeleteFlourish.play(in: window, cart: CartridgeTileView.cartridgeImage(for: game), rect: rect)
+        }
+        SoundFX.shared.playRemoved()
+
         store.remove(id: game.id)
         // Delete the app-managed ROM copy — but only if it lives in our folder (never touch a
         // ROM the user still keeps elsewhere).
@@ -741,44 +866,21 @@ enum ImageCache {
 
 extension LibraryWindowController: NSWindowDelegate {
     /// Coming back from Finder (where the user may have just dropped a ROM into the folder) refreshes
-    /// the library so freshly-added games appear without a relaunch.
+    /// the library so freshly-added games appear without a relaunch — and re-checks iCloud so a game
+    /// just sent from the phone surfaces the moment you switch back to the Mac.
     func windowDidBecomeKey(_ notification: Notification) {
         guard playSession == nil else { return }   // don't disturb an in-progress play session
         scanRomsFolder()
+        refreshContinueCard()
     }
 }
 
 extension LibraryWindowController: NSToolbarDelegate {
-    // The toolbar is kept for the unified titlebar chrome. It carries one right-aligned item: a quick
-    // "play the arrival animation" button (a preview of the Handoff transfer flourish). The library
-    // scope lives in the pull-up FilterDrawer; Add ROMs lives in the footer glass buttons.
-    static let arrivalDemoItem = NSToolbarItem.Identifier("arrivalDemo")
-
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.flexibleSpace, Self.arrivalDemoItem]   // flexible space pushes the button to the top-right
-    }
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.flexibleSpace, .space, Self.arrivalDemoItem]
-    }
+    // The toolbar carries no items — it exists only for the unified, transparent titlebar chrome so the
+    // black shelf reads to the top of the window. Library scope lives in the pull-up FilterDrawer; Add
+    // ROMs and the rest of the actions live in the footer glass buttons and the per-cartridge menu.
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [] }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [] }
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
-                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        guard id == Self.arrivalDemoItem else { return nil }
-        let item = NSToolbarItem(itemIdentifier: id)
-        item.label = "Arrival"
-        item.toolTip = "Preview the Handoff arrival animation"
-        item.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Play arrival animation")
-        item.isBordered = true
-        item.target = self
-        item.action = #selector(playArrivalDemo)
-        return item
-    }
-
-    /// Play the NameDrop-style arrival flourish over the shelf, using the first library game's cover —
-    /// a one-click preview of what a received transfer looks like, without needing a second device.
-    @objc private func playArrivalDemo() {
-        guard let g = store.games.first else { return }
-        NameDropArrival.show(in: window, game: g, cover: nil, device: "iPhone") { [weak self] in
-            self?.refreshContinueCard()
-        }
-    }
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? { nil }
 }

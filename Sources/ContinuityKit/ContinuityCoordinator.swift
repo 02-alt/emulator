@@ -120,18 +120,36 @@ public actor ContinuityCoordinator {
         return name
     }
 
-    /// Distinct device names that have published a session, excluding this device — the addressable
-    /// targets for a "Send to →" menu, newest-active first. Derived from existing cards, so targeting
-    /// needs no separate presence registry.
+    /// Distinct device names that have published a session *or* a ROM offer, excluding this device —
+    /// the addressable targets for a "Send to →" menu, newest-active first. Derived from existing
+    /// records, so targeting needs no separate presence registry. Folding in offer devices means a
+    /// device that only ever *shared* a ROM (never played) is still a reachable target.
     public func otherDeviceNames() async throws -> [String] {
-        let cards = try await store.allCards().sorted { $0.metadata.timestamp > $1.metadata.timestamp }
+        async let cardsTask = store.allCards()
+        async let offersTask = store.allROMOffers()
+        let cards = (try? await cardsTask) ?? []
+        let offers = (try? await offersTask) ?? []
+        let dated: [(name: String, when: Date)] =
+            cards.map { ($0.metadata.deviceName, $0.metadata.timestamp) }
+            + offers.map { ($0.deviceName, $0.timestamp) }
         var seen = Set<String>()
         var names: [String] = []
-        for name in cards.map(\.metadata.deviceName) where name != deviceName && seen.insert(name).inserted {
-            names.append(name)
+        for entry in dated.sorted(by: { $0.when > $1.when })
+        where !entry.name.isEmpty && entry.name != deviceName && seen.insert(entry.name).inserted {
+            names.append(entry.name)
         }
         return names
     }
+
+    /// ROM offers visible to *this* device — broadcasts plus offers addressed to us, newest first, with
+    /// our own offers excluded. Backs direct offer-discovery so a shared game surfaces even when the
+    /// sender never played it (no companion snapshot). Cheap — metadata only, never the ROM bytes.
+    public func romOffers() async throws -> [ROMOffer] {
+        try await store.allROMOffers()
+            .filter { $0.deviceName != deviceName && ($0.targetDevice == nil || $0.targetDevice == deviceName) }
+            .sorted { $0.timestamp > $1.timestamp }
+    }
+
 
     /// Download the offered ROM bytes, or nil if none.
     public func fetchROM(forRomHash romHash: String) async throws -> Data? {
@@ -141,6 +159,17 @@ public actor ContinuityCoordinator {
     /// Download the offered box art, or nil if none was included.
     public func fetchROMCover(forRomHash romHash: String) async throws -> Data? {
         try await store.fetchROMCover(romHash: romHash)
+    }
+
+    /// Attach the game's battery save to the ROM offer just published, so the receiver continues the
+    /// player's progress instead of a blank cartridge. Call right after ``publishROM``.
+    public func publishROMBattery(romHash: String, data: Data) async throws {
+        try await store.publishROMBattery(romHash: romHash, data: data)
+    }
+
+    /// Download the battery save that rode along with a ROM offer, or nil if none.
+    public func fetchROMBattery(forRomHash romHash: String) async throws -> Data? {
+        try await store.fetchROMBattery(romHash: romHash)
     }
 
     /// Delete the ROM offer — called by the receiver right after import to keep the copy ephemeral.

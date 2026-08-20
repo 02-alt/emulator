@@ -58,7 +58,7 @@ struct CoverCropEditor: View {
                     }
                 }
                 .font(DS.mono(13, .medium))
-                .tint(.green)
+                .tint(DS.accent)
 
                 Spacer()
             }

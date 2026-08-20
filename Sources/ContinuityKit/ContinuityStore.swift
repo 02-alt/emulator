@@ -64,6 +64,20 @@ public protocol ContinuityStore: Sendable {
     /// copy is ephemeral, or by the sender to withdraw an offer.
     func clearROM(romHash: String) async throws
 
+    // MARK: Save transfer (rides with the ROM offer)
+    //
+    // A game's cartridge battery save (SRAM/flash — the player's actual progress) can travel with the
+    // ROM so the receiver continues where the sender was, instead of importing a blank cartridge. It's
+    // small, lives on the *same* ephemeral offer record, and is torn down with it by `clearROM`.
+
+    /// Attach the game's battery save to an existing ROM offer. Call after ``publishROM`` so the offer
+    /// record exists; a no-op if it doesn't. Idempotent per `romHash`.
+    func publishROMBattery(romHash: String, data: Data) async throws
+
+    /// Download the battery save that rode along with a ROM offer, or nil if none did. The receiver
+    /// writes it into the imported game's save folder.
+    func fetchROMBattery(romHash: String) async throws -> Data?
+
     // MARK: Targeted transfer (optional)
     //
     // A send can be addressed to one specific device (by its `deviceName`) instead of broadcast to
@@ -76,6 +90,34 @@ public protocol ContinuityStore: Sendable {
 
     /// The device a ROM offer is addressed to, or nil for a broadcast offer / when no offer exists.
     func fetchROMTarget(romHash: String) async throws -> String?
+
+    /// Every ROM offer currently in the store, self-describing (no companion snapshot needed). Lets a
+    /// device discover games *shared* to it even when the sender never played them — a pure "share the
+    /// ROM" send. Order unspecified; callers sort by `timestamp` and filter by `targetDevice`.
+    func allROMOffers() async throws -> [ROMOffer]
+}
+
+/// A discoverable ROM offer: enough to show "Transfer from <device>" and fetch the bytes, without a
+/// companion session snapshot. Enumerated by ``ContinuityStore/allROMOffers()``.
+public struct ROMOffer: Sendable, Equatable {
+    /// Cross-device game identity (matches `Game.romHash`), and the offer record's key.
+    public var romHash: String
+    /// Original filename incl. extension — drives the receiver's system detection and title.
+    public var fileName: String
+    /// The device that made the offer (for "Transfer from iPhone" and to skip our own offers).
+    public var deviceName: String
+    /// When the offer was published, for newest-first ordering.
+    public var timestamp: Date
+    /// The addressee's `deviceName`, or nil for a broadcast to all the user's devices.
+    public var targetDevice: String?
+
+    public init(romHash: String, fileName: String, deviceName: String, timestamp: Date, targetDevice: String?) {
+        self.romHash = romHash
+        self.fileName = fileName
+        self.deviceName = deviceName
+        self.timestamp = timestamp
+        self.targetDevice = targetDevice
+    }
 }
 
 public extension ContinuityStore {
@@ -87,4 +129,13 @@ public extension ContinuityStore {
 
     /// Default: offers are broadcast (no addressee).
     func fetchROMTarget(romHash: String) async throws -> String? { nil }
+
+    /// Default: no enumerable offers (stores that predate offer-discovery expose none, so the receiver
+    /// simply finds nothing — exactly its behaviour before this method existed).
+    func allROMOffers() async throws -> [ROMOffer] { [] }
+
+    /// Default: no battery channel — stores that predate save-transfer drop it, so the receiver finds
+    /// none and imports a blank cartridge exactly as before.
+    func publishROMBattery(romHash: String, data: Data) async throws {}
+    func fetchROMBattery(romHash: String) async throws -> Data? { nil }
 }

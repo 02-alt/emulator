@@ -181,7 +181,7 @@ struct GameDetailsSheet: View {
                 Text("\(p.earnedPoints) / \(p.points) pts")
                     .font(DS.mono(13)).foregroundStyle(DS.textSecondary)
             }
-            ProgressView(value: p.total > 0 ? Double(p.earned) / Double(p.total) : 0).tint(.green)
+            ProgressView(value: p.total > 0 ? Double(p.earned) / Double(p.total) : 0).tint(DS.accent)
 
             ForEach(sortedAchievements(p), id: \.id) { a in
                 HStack(spacing: 10) {

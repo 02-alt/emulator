@@ -108,10 +108,21 @@ actor LocalContinuityStore: ContinuityStore {
         try? Data(contentsOf: dir(romHash).appendingPathComponent("cover.png"))
     }
 
+    func publishROMBattery(romHash: String, data: Data) async throws {
+        let dir = dir(romHash)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try data.write(to: dir.appendingPathComponent("rom-battery.sav"), options: .atomic)
+    }
+
+    func fetchROMBattery(romHash: String) async throws -> Data? {
+        try? Data(contentsOf: dir(romHash).appendingPathComponent("rom-battery.sav"))
+    }
+
     func clearROM(romHash: String) async throws {
         try? FileManager.default.removeItem(at: dir(romHash).appendingPathComponent("rom.bin"))
         try? FileManager.default.removeItem(at: dir(romHash).appendingPathComponent("rom-name.txt"))
         try? FileManager.default.removeItem(at: dir(romHash).appendingPathComponent("cover.png"))
+        try? FileManager.default.removeItem(at: dir(romHash).appendingPathComponent("rom-battery.sav"))
         try? FileManager.default.removeItem(at: dir(romHash).appendingPathComponent("rom-target.txt"))
     }
 }

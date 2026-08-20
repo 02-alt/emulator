@@ -96,7 +96,8 @@ final class ContinuityService {
         if Self.cloudKitUsable {
             store = MirroringContinuityStore(
                 local: local,
-                cloud: CloudKitContinuityStore(containerIdentifier: Self.cloudContainer))
+                cloud: CloudKitContinuityStore(containerIdentifier: Self.cloudContainer,
+                                               deviceName: UIDevice.current.name))
         } else {
             store = local
         }
@@ -149,10 +150,28 @@ final class ContinuityService {
 
     // MARK: - ROM transfer (opt-in, ephemeral)
 
-    /// The newest session for a game this device doesn't have, whose source device has offered the ROM
-    /// for transfer. Drives a "Transfer from Mac" affordance so a game started elsewhere can be brought
-    /// over. Nil when nothing's transferable. See About ▸ Handoff for the opt-in and privacy stance.
-    private(set) var transferOffer: (card: ContinuityCard, fileName: String)?
+    /// Every game shared to this device that it doesn't already have, newest first — so the UI can
+    /// offer to receive them as a **pack** in one tap. See About ▸ Handoff for the opt-in and privacy.
+    private(set) var pendingTransfers: [(card: ContinuityCard, fileName: String)] = []
+
+    /// The newest pending transfer, for callers that handle one at a time.
+    var transferOffer: (card: ContinuityCard, fileName: String)? { pendingTransfers.first }
+
+    /// Offers the user waved away this run (keyed by game + offer time), so a dismissed pack stays gone
+    /// — but a *newer* send for the same game (newer timestamp → new key) surfaces again. Not persisted.
+    private var dismissedTransfers = Set<String>()
+    private func transferKey(_ romHash: String, _ timestamp: Date) -> String {
+        "\(romHash)|\(timestamp.timeIntervalSince1970)"
+    }
+
+    /// Dismiss the whole pending pack (long-press ▸ Dismiss) — hides every current offer without
+    /// downloading, and remembers them so they don't reappear until re-sent.
+    func dismissPendingTransfers() {
+        for item in pendingTransfers {
+            dismissedTransfers.insert(transferKey(item.card.metadata.romHash, item.card.metadata.timestamp))
+        }
+        pendingTransfers = []
+    }
 
     /// Offer a game's ROM so another of the user's devices lacking it can receive and import it — only
     /// when the user opted in. Called from the publish path (a terminal moment). No-op otherwise.
@@ -161,19 +180,41 @@ final class ContinuityService {
         await offerROM(game: game)
     }
 
+    /// A clean, filesystem-safe "<title>.<ext>" filename for an outgoing ROM offer, so the receiver
+    /// shows the real game title (not a content hash) and imports with a tidy name. Falls back to the
+    /// on-disk filename if the title is empty or has no usable extension.
+    static func offerFileName(for game: Game) -> String {
+        let ext = game.romURL.pathExtension
+        let safe = game.displayTitle
+            .components(separatedBy: CharacterSet(charactersIn: "/\\:*?\"<>|"))
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (safe.isEmpty || ext.isEmpty) ? game.romURL.lastPathComponent : "\(safe).\(ext)"
+    }
+
     /// Actively offer a game's ROM to the user's other devices now — the "Send to My Devices" gesture.
     /// `targetDevice` addresses one device by name (from ``sendTargets()``); nil broadcasts to all.
     /// Ungated (the caller is responsible for consent/ownership); returns whether the offer was made.
     @discardableResult
     func offerROM(game: Game, targetDevice: String? = nil) async -> Bool {
         guard let data = try? Data(contentsOf: game.romURL) else { return false }
-        let fileName = game.romURL.lastPathComponent
+        // Send a clean, title-based filename (ROMs are stored under a content-hash name, so the raw
+        // filename is a hash — the receiver would show that hash as the game's title). The extension is
+        // preserved: it drives the receiver's GBA/GBC system detection.
+        let fileName = Self.offerFileName(for: game)
         // Include our cached box art so the receiver shows matching cover without re-matching a
         // (possibly cleaned/region-less) title against the thumbnail repo.
         let coverPNG = try? Data(contentsOf: AppPaths.coversDir.appendingPathComponent("\(game.romHash).png"))
         do {
             try await coordinator.publishROM(
                 romHash: game.romHash, fileName: fileName, coverPNG: coverPNG, data: data, targetDevice: targetDevice)
+            // Ride the player's cartridge save along with the game so the receiver continues their
+            // progress rather than a blank save. Best-effort — a missing/failed battery just means a
+            // fresh cartridge on the other end, exactly as before.
+            let batteryURL = SavePaths.directory(forHash: game.romHash).appendingPathComponent("battery.sav")
+            if let battery = try? Data(contentsOf: batteryURL), !battery.isEmpty {
+                try? await coordinator.publishROMBattery(romHash: game.romHash, data: battery)
+            }
             return true
         } catch {
             NSLog("[Encore] Send failed — cloudKitUsable=\(Self.cloudKitUsable) error=\(error)")
@@ -187,21 +228,31 @@ final class ContinuityService {
         (try? await coordinator.otherDeviceNames()) ?? []
     }
 
-    /// Recompute `transferOffer`: the newest session for a game NOT in `games` that has a ROM offer,
-    /// excluding this device's own sessions. Cheap — never downloads the ROM bytes.
+    /// Recompute `pendingTransfers`: every game shared to this device that it doesn't already have,
+    /// newest first, discovered directly from ROM offers (no companion snapshot needed). Cheap — never
+    /// downloads the ROM bytes.
     func refreshTransferOffer(for games: [Game]) async {
-        let owned = Set(games.map(\.romHash))
-        let cards = (try? await coordinator.allCards()) ?? []
-        var best: (card: ContinuityCard, fileName: String)?
-        for card in cards where !owned.contains(card.metadata.romHash)
-            && card.metadata.deviceName != UIDevice.current.name {
-            guard let fileName = try? await coordinator.romOffer(forRomHash: card.metadata.romHash)
-            else { continue }
-            if best == nil || card.metadata.timestamp > best!.card.metadata.timestamp {
-                best = (card, fileName)
-            }
+        let ownedHashes = Set(games.map(\.romHash))
+        let ownedTitles = Set(games.map { $0.displayTitle.lowercased().trimmingCharacters(in: .whitespaces) })
+        let offers = (try? await coordinator.romOffers()) ?? []   // newest-first, addressed to us
+        // Collapse into a single de-duplicated pack: one entry per game, keyed by ROM hash *and* by
+        // title. Skips games we already own (by hash or title), and shows the same game offered more
+        // than once (across separate sends, or two dumps of one title) only once — newest wins.
+        var seenHash = Set<String>()
+        var seenTitle = Set<String>()
+        pendingTransfers = offers.compactMap { offer -> (card: ContinuityCard, fileName: String)? in
+            guard !ownedHashes.contains(offer.romHash) else { return nil }
+            guard !dismissedTransfers.contains(transferKey(offer.romHash, offer.timestamp)) else { return nil }
+            let title = (offer.fileName as NSString).deletingPathExtension
+            let titleKey = title.lowercased().trimmingCharacters(in: .whitespaces)
+            guard !ownedTitles.contains(titleKey) else { return nil }   // already have this game by title
+            guard seenHash.insert(offer.romHash).inserted,
+                  titleKey.isEmpty || seenTitle.insert(titleKey).inserted else { return nil }
+            let card = ContinuityCard(metadata: ContinuityMetadata(
+                romHash: offer.romHash, romTitle: title, timestamp: offer.timestamp,
+                deviceName: offer.deviceName, secondsPlayed: 0, coreVersion: Self.coreVersion))
+            return (card, offer.fileName)
         }
-        transferOffer = best
     }
 
     /// Download the offered ROM bytes for a transfer, or nil if the offer vanished.
@@ -214,9 +265,14 @@ final class ContinuityService {
         try? await coordinator.fetchROMCover(forRomHash: romHash)
     }
 
+    /// Download the sender's cartridge save for a transfer, or nil if none rode along.
+    func downloadROMBattery(romHash: String) async -> Data? {
+        try? await coordinator.fetchROMBattery(forRomHash: romHash)
+    }
+
     /// Drop the ROM offer once it's been received here, so the cloud copy stays ephemeral.
     func clearROM(romHash: String) async {
         try? await coordinator.clearROM(romHash: romHash)
-        if transferOffer?.card.metadata.romHash == romHash { transferOffer = nil }
+        pendingTransfers.removeAll { $0.card.metadata.romHash == romHash }
     }
 }

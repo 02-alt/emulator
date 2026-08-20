@@ -54,7 +54,8 @@ final class ContinuityService {
         // the card simply never appears.
         if Self.cloudKitUsable {
             coordinator = ContinuityCoordinator(
-                store: CloudKitContinuityStore(containerIdentifier: Self.cloudContainer),
+                store: CloudKitContinuityStore(containerIdentifier: Self.cloudContainer,
+                                               deviceName: Self.deviceName),
                 coreVersion: Self.coreVersion,
                 deviceName: Self.deviceName)
         } else {
@@ -127,13 +128,28 @@ final class ContinuityService {
     func offerROM(game: Game, targetDevice: String? = nil) async -> Bool {
         guard let coordinator else { return false }
         guard let data = try? Data(contentsOf: game.romURL) else { return false }
-        let fileName = game.romURL.lastPathComponent
+        // Send a clean, title-based filename (ROMs are stored under a content-hash name, so the raw
+        // filename is a hash — the receiver would otherwise show that hash as the game's title). The
+        // extension is preserved: it drives the receiver's GBA/GBC system detection.
+        let ext = game.romURL.pathExtension
+        let safeTitle = game.displayTitle
+            .components(separatedBy: CharacterSet(charactersIn: "/\\:*?\"<>|"))
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let fileName = (safeTitle.isEmpty || ext.isEmpty) ? game.romURL.lastPathComponent : "\(safeTitle).\(ext)"
         // Ship our cached box art so the receiver shows the exact same cover (ROMs stored under a
         // content-hash filename won't re-match the thumbnail repo on the other device).
         let coverPNG = CoverArtService().cachedCoverURL(hash: game.romHash).flatMap { try? Data(contentsOf: $0) }
         do {
             try await coordinator.publishROM(
                 romHash: game.romHash, fileName: fileName, coverPNG: coverPNG, data: data, targetDevice: targetDevice)
+            // Ride the player's cartridge save along with the game so the receiver continues their
+            // progress rather than a blank save. Best-effort — a missing/failed battery just means a
+            // fresh cartridge on the other end.
+            let batteryURL = SaveStore(romURL: game.romURL).batteryURL
+            if let battery = try? Data(contentsOf: batteryURL), !battery.isEmpty {
+                try? await coordinator.publishROMBattery(romHash: game.romHash, data: battery)
+            }
             return true
         } catch {
             return false
@@ -153,18 +169,20 @@ final class ContinuityService {
     func newestTransferOffer(excluding owned: [Game]) async -> CrossDeviceTransfer? {
         guard let coordinator else { return nil }
         let ownedHashes = Set(owned.map(\.romHash))
-        let cards = (try? await coordinator.allCards()) ?? []
-        var best: CrossDeviceTransfer?
-        for card in cards where !ownedHashes.contains(card.metadata.romHash)
-            && card.metadata.deviceName != Self.deviceName {
-            guard let fileName = try? await coordinator.romOffer(forRomHash: card.metadata.romHash)
-            else { continue }
-            let offer = CrossDeviceTransfer(card: card, fileName: fileName)
-            if best == nil || offer.card.metadata.timestamp > best!.card.metadata.timestamp {
-                best = offer
-            }
-        }
-        return best
+        // Discover ROM offers directly (newest-first, addressed to us or broadcast, our own excluded), so
+        // a game shared to this Mac surfaces even when the sender never played it — no snapshot needed.
+        let offers = (try? await coordinator.romOffers()) ?? []
+        guard let offer = offers.first(where: { !ownedHashes.contains($0.romHash) }) else { return nil }
+        return CrossDeviceTransfer(card: Self.card(from: offer), fileName: offer.fileName)
+    }
+
+    /// Synthesize a display card from a bare ROM offer (title from the filename), for the "Transfer
+    /// from <device>" surface when no session snapshot rode along.
+    private static func card(from offer: ROMOffer) -> ContinuityCard {
+        let title = (offer.fileName as NSString).deletingPathExtension
+        return ContinuityCard(metadata: ContinuityMetadata(
+            romHash: offer.romHash, romTitle: title, timestamp: offer.timestamp,
+            deviceName: offer.deviceName, secondsPlayed: 0, coreVersion: Self.coreVersion))
     }
 
     /// Download the offered ROM bytes for a transfer, or nil if the offer vanished. Runs off the main
@@ -179,6 +197,13 @@ final class ContinuityService {
     func downloadROMCover(romHash: String) async -> Data? {
         guard let coordinator else { return nil }
         return try? await coordinator.fetchROMCover(forRomHash: romHash)
+    }
+
+    /// Download the offered cartridge save for a transfer, or nil if none rode along. Runs off the main
+    /// actor. Fetch before `clearROM` — clearing deletes the whole offer record.
+    func downloadROMBattery(romHash: String) async -> Data? {
+        guard let coordinator else { return nil }
+        return try? await coordinator.fetchROMBattery(forRomHash: romHash)
     }
 
     /// Drop the ROM offer once it's been received here, so it doesn't linger in iCloud.

@@ -59,8 +59,8 @@ struct SettingsView: View {
                         ForEach(DisplayFilter.allCases) { Text($0.title).tag($0.rawValue) }
                     }
                     if defaultFilter == DisplayFilter.lcd.rawValue {
-                        Toggle("LCD Backlight (AGS-101)", isOn: $lcdBacklit).tint(.green)
-                        Toggle("LCD Ghosting", isOn: $lcdGhosting).tint(.green)
+                        Toggle("LCD Backlight (AGS-101)", isOn: $lcdBacklit).tint(DS.accent)
+                        Toggle("LCD Ghosting", isOn: $lcdGhosting).tint(DS.accent)
                     }
                 }
 
@@ -72,15 +72,15 @@ struct SettingsView: View {
                     }
                     HStack {
                         Image(systemName: "circle.dotted").foregroundStyle(.secondary)
-                        Slider(value: $controlOpacity, in: 0.2...1).tint(.green)
+                        Slider(value: $controlOpacity, in: 0.2...1).tint(DS.accent)
                         Image(systemName: "circle.fill").foregroundStyle(.secondary)
                     }
-                    Toggle("Haptics", isOn: $haptics).tint(.green)
-                    Toggle("Swap A / B by default", isOn: $defaultSwapAB).tint(.green)
+                    Toggle("Haptics", isOn: $haptics).tint(DS.accent)
+                    Toggle("Swap A / B by default", isOn: $defaultSwapAB).tint(DS.accent)
                 }
 
                 Section {
-                    Toggle("Analog Stick as D-Pad", isOn: $joystickAsDpad).tint(.green)
+                    Toggle("Analog Stick as D-Pad", isOn: $joystickAsDpad).tint(DS.accent)
                 } header: {
                     Text("Controller")
                 } footer: {
@@ -93,12 +93,12 @@ struct SettingsView: View {
                         Text("3×").tag(3.0)
                         Text("4×").tag(4.0)
                     }
-                    Toggle("Rewind", isOn: $rewindEnabled).tint(.green)
-                    Toggle("Auto-Resume on Launch", isOn: $autoResume).tint(.green)
+                    Toggle("Rewind", isOn: $rewindEnabled).tint(DS.accent)
+                    Toggle("Auto-Resume on Launch", isOn: $autoResume).tint(DS.accent)
                 }
 
                 Section {
-                    Toggle("Transfer Games Between My Devices", isOn: $transferEnabled).tint(.green)
+                    Toggle("Transfer Games Between My Devices", isOn: $transferEnabled).tint(DS.accent)
                 } header: {
                     Text("Handoff")
                 } footer: {
@@ -109,7 +109,7 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Toggle("Trophy Banners", isOn: $trophyNotifications).tint(.green)
+                    Toggle("Trophy Banners", isOn: $trophyNotifications).tint(DS.accent)
                     Button("Preview Banner") {
                         // The banner host lives at the app root, behind this sheet — dismiss to the
                         // library so the preview is actually visible, then post it.

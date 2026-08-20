@@ -89,8 +89,24 @@ struct MirroringContinuityStore: ContinuityStore {
         return try await local.fetchROMCover(romHash: romHash)
     }
 
+    func publishROMBattery(romHash: String, data: Data) async throws {
+        try await local.publishROMBattery(romHash: romHash, data: data)  // instant local copy
+        try? await cloud.publishROMBattery(romHash: romHash, data: data)  // best-effort to iCloud
+    }
+
+    func fetchROMBattery(romHash: String) async throws -> Data? {
+        if let battery = try? await cloud.fetchROMBattery(romHash: romHash) { return battery }
+        return try await local.fetchROMBattery(romHash: romHash)
+    }
+
     func clearROM(romHash: String) async throws {
         try? await local.clearROM(romHash: romHash)
         try? await cloud.clearROM(romHash: romHash)
+    }
+
+    func allROMOffers() async throws -> [ROMOffer] {
+        // Discovering *shared* games means offers from other devices — those live in iCloud. Our own
+        // local offers aren't discoveries, and the coordinator would filter them out anyway.
+        (try? await cloud.allROMOffers()) ?? []
     }
 }

@@ -107,6 +107,11 @@ enum DS {
     static let textSecondary = Color(white: 0.62)
     static let textTertiary = Color(white: 0.34)
 
+    /// The single accent — a muted slate blue-grey. Deliberately NOT green (or any saturated hue):
+    /// it sits quietly against the black chrome and the glass, reading as "active" without shouting.
+    /// Use this everywhere a control needs a tint (toggles, sliders, on-states) instead of `.green`.
+    static let accent = Color(red: 0.44, green: 0.55, blue: 0.68)
+
     static func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
     }

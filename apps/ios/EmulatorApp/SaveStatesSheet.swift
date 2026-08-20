@@ -88,7 +88,7 @@ struct SaveStatesSheet: View {
                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .tint(.green)
+                .tint(DS.accent)
 
             Button("LOAD") { onLoad(slot) { ok in if ok { dismiss() } } }
                 .font(.system(size: 12, weight: .semibold, design: .monospaced))

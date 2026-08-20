@@ -6,6 +6,7 @@ import Foundation
 public actor InMemoryContinuityStore: ContinuityStore {
     private var snapshots: [String: ContinuitySnapshot] = [:]
     private var romOffers: [String: (fileName: String, coverPNG: Data?, data: Data)] = [:]
+    private var romBatteries: [String: Data] = [:]
 
     public init() {}
 
@@ -47,8 +48,19 @@ public actor InMemoryContinuityStore: ContinuityStore {
         romOffers[romHash]?.coverPNG
     }
 
+    public func publishROMBattery(romHash: String, data: Data) async throws {
+        // Mirror CloudKit: the battery rides an existing offer; no offer → nothing to attach to.
+        guard romOffers[romHash] != nil else { return }
+        romBatteries[romHash] = data
+    }
+
+    public func fetchROMBattery(romHash: String) async throws -> Data? {
+        romBatteries[romHash]
+    }
+
     public func clearROM(romHash: String) async throws {
         romOffers[romHash] = nil
+        romBatteries[romHash] = nil   // battery is torn down with the offer
     }
 
     /// Test affordance: how many games currently have a snapshot.

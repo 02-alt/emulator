@@ -34,12 +34,15 @@ final class Settings {
     /// A procedurally-synthesized background ambience (see ``AmbientPlayer``). Plays in the Library
     /// and in-game alike, independent of the emulator's own audio.
     enum AmbientScene: Int, CaseIterable {
-        case off = 0, rain, storm
+        case off = 0, rain, storm, cabin, park, shore
         var title: String {
             switch self {
             case .off: "Off"
             case .rain: "Rain"
             case .storm: "Storm"
+            case .cabin: "Cabin"
+            case .park: "Park"
+            case .shore: "Shore"
             }
         }
     }

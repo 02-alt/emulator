@@ -10,6 +10,7 @@ struct LibraryView: View {
     @Environment(LibraryModel.self) private var library
     @Environment(ContinuityService.self) private var continuity
     @Environment(LaunchCoordinator.self) private var launcher
+    @Environment(\.scenePhase) private var scenePhase
     @State private var importing = false
     @State private var importError: String?
     /// Index of the centered cart in the coverflow — the single source of truth for which cart is
@@ -21,10 +22,19 @@ struct LibraryView: View {
     @State private var showSettings = false
     @State private var showSearch = false
     @State private var arrival: ArrivalInfo?
+    /// The games (first three) currently flying up in the send flourish; empty when idle.
+    @State private var sendFlourish: [Game] = []
+    /// A game currently dropping away in the delete flourish; nil when idle.
+    @State private var deleteFlourish: Game?
     @State private var focusedCartFrame: CGRect?
     /// Set when the user taps "Send to My Devices" while game transfer is still off — drives the
     /// one-time consent alert before the first send. `target` is the chosen device (nil = broadcast).
     @State private var sendConsent: (game: Game, target: String?)?
+    /// Non-nil drives the multi-select send sheet, pre-selecting this cartridge.
+    @State private var sendPickerPreselect: Game?
+    /// Set when confirming a multi-select send while game transfer is still off — the one-time consent
+    /// alert before the batch is offered.
+    @State private var sendMultipleConsent: (games: [Game], target: String?)?
     /// The user's other devices, so the context menu can offer "Send to → [device]". Empty → a plain
     /// broadcast "Send to My Devices".
     @State private var sendTargets: [String] = []
@@ -63,6 +73,20 @@ struct LibraryView: View {
                 .zIndex(20)
             }
         }
+        .overlay {
+            if !sendFlourish.isEmpty {
+                SendFlourishView(games: sendFlourish, covers: library.covers) { sendFlourish = [] }
+                    .allowsHitTesting(false)
+                    .zIndex(25)
+            }
+        }
+        .overlay {
+            if let game = deleteFlourish {
+                DeleteFlourishView(game: game, covers: library.covers) { deleteFlourish = nil }
+                    .allowsHitTesting(false)
+                    .zIndex(26)
+            }
+        }
         .navigationDestination(for: PlayRequest.self) { GameView(game: $0.game, resume: $0.resume) }
         .navigationTitle("Library")
         .navigationBarTitleDisplayMode(.inline)
@@ -81,6 +105,13 @@ struct LibraryView: View {
                     withAnimation(.snappy) { selected = idx }
                 }
             }
+        }
+        // Incoming shared ROM: its own always-visible banner at the top, so it isn't hidden by a
+        // Continue session competing for the bottom bar's single slot. Springs in when it appears.
+        .safeAreaInset(edge: .top) {
+            incomingTransferBanner
+                .animation(.spring(response: 0.5, dampingFraction: 0.62),
+                           value: continuity.pendingTransfers.count)
         }
         // Apple-Music-style floating bottom bar: Settings · now-playing capsule · Import.
         .safeAreaInset(edge: .bottom) { bottomBar }
@@ -103,9 +134,27 @@ struct LibraryView: View {
             Text("This copies the game to your other devices through your own private iCloud — never our "
                 + "servers — so you can pick it up there. Only send games you legally own.")
         }
+        .alert("Send to your devices?", isPresented: .constant(sendMultipleConsent != nil), presenting: sendMultipleConsent) { pending in
+            Button("Send") {
+                AppSettings.setTransferEnabled(true)   // remember the choice, like the Settings toggle
+                sendMultipleConsent = nil
+                Task { await sendMultiple(pending.games, target: pending.target) }
+            }
+            Button("Cancel", role: .cancel) { sendMultipleConsent = nil }
+        } message: { pending in
+            Text("This copies \(pending.games.count) game\(pending.games.count == 1 ? "" : "s") to your other "
+                + "devices through your own private iCloud — never our servers — so you can pick them up there. "
+                + "Only send games you legally own.")
+        }
         .sheet(item: $settingsGame) { GameSettingsView(game: $0) }
         .sheet(item: $detailsGame) { GameDetailsSheet(game: $0) }
         .sheet(isPresented: $showSettings) { SettingsView() }
+        .sheet(item: $sendPickerPreselect) { game in
+            SendMultipleSheet(games: library.games, covers: library.covers,
+                              preselect: game.id, sendTargets: sendTargets) { chosen, target in
+                handleSendMultiple(chosen, target: target)
+            }
+        }
         .task(id: library.games.count) {
             await continuity.refreshBanner(for: library.games)
             await continuity.refreshTransferOffer(for: library.games)
@@ -117,6 +166,25 @@ struct LibraryView: View {
                 await continuity.refreshTransferOffer(for: library.games)
             }
             if ProcessInfo.processInfo.environment["EMU_OPEN_SETTINGS"] != nil { showSettings = true }
+        }
+        // Live refresh: re-check iCloud for incoming shares while the library is on screen, so a game
+        // sent from another device appears without reopening the app (we have no push channel).
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                guard !Task.isCancelled else { break }
+                await continuity.refreshTransferOffer(for: library.games)
+                await continuity.refreshBanner(for: library.games)
+            }
+        }
+        // And immediately when the app returns to the foreground (e.g. you switch to the phone to grab
+        // a game you just sent from the Mac).
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task {
+                await continuity.refreshTransferOffer(for: library.games)
+                await continuity.refreshBanner(for: library.games)
+            }
         }
     }
 
@@ -148,8 +216,9 @@ struct LibraryView: View {
                     onContextDetails: { detailsGame = $0 },
                     onContextSettings: { settingsGame = $0 },
                     onContextSend: { handleSend($0, target: $1) },
-                    onContextDelete: { library.delete($0) })
-                    .frame(height: cardH + 40)
+                    onContextSendMultiple: { sendPickerPreselect = $0 },
+                    onContextDelete: { handleDelete($0) })
+                    .frame(height: cardH + 56)   // extra vertical room so taller GBC carts don't clip
 
                 VStack(spacing: 8) {
                     focusedTitle
@@ -228,6 +297,26 @@ struct LibraryView: View {
 
     // MARK: - Floating bottom bar (Apple Music-style)
 
+    /// A shared game waiting to be received — shown as its own banner just under the title so it's
+    /// always visible, independent of the Continue strip. Tapping downloads + imports it.
+    @ViewBuilder private var incomingTransferBanner: some View {
+        let items = continuity.pendingTransfers
+        if let first = items.first {
+            TransferCapsule(card: first.card, count: items.count) { await handleReceiveAll(items) }
+                .contextMenu {
+                    Button(role: .destructive) { continuity.dismissPendingTransfers() } label: {
+                        Label(items.count > 1 ? "Dismiss All" : "Dismiss", systemImage: "xmark.circle")
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 6)
+                // Swoop down from the top edge with a springy scale as it arrives.
+                .transition(.move(edge: .top).combined(with: .opacity)
+                    .combined(with: .scale(scale: 0.9, anchor: .top)))
+                .id(first.card.metadata.romHash)   // re-trigger the entrance when the lead game changes
+        }
+    }
+
     private var bottomBar: some View {
         HStack(spacing: 12) {
             circleButton("gearshape") { showSettings = true }
@@ -238,8 +327,6 @@ struct LibraryView: View {
                     sessions: continuity.recentSessions,
                     game: { game(forHash: $0) },
                     source: { continuity.sourceLabel(for: $0) })
-            } else if let offer = continuity.transferOffer {
-                TransferCapsule(card: offer.card) { await handleTransfer(offer) }
             } else {
                 Spacer(minLength: 0)
             }
@@ -280,6 +367,19 @@ struct LibraryView: View {
         }
     }
 
+    /// Kick off the send flourish — the first three sent cartridges streak up off the top, toward iCloud.
+    private func playSendFlourish(_ games: [Game]) {
+        sendFlourish = Array(games.prefix(3))
+    }
+
+    /// Delete a game with a matching flourish: the cartridge drops away with a soft power-down cue, then
+    /// it's removed from the library (the falling overlay covers the shelf re-laying behind it).
+    private func handleDelete(_ game: Game) {
+        SoundFX.shared.playRemoved()
+        deleteFlourish = game
+        library.delete(game)
+    }
+
     private func sendToDevices(_ game: Game, target: String?) async {
         // Cross-device send travels through your private iCloud; without a provisioned container there's
         // nowhere for the game to go. Say that plainly instead of implying a network fault.
@@ -289,11 +389,46 @@ struct LibraryView: View {
                 symbol: "icloud.slash", caption: "Handoff"))
             return
         }
+        playSendFlourish([game])
         let ok = await continuity.offerROM(game: game, targetDevice: target)
         let dest = target ?? "your devices"
         AppNotifier.shared.post(ok
             ? .info("Sent to \(dest)", symbol: "iphone.and.arrow.forward", caption: "Handoff")
             : .info("Couldn’t reach iCloud — try again", symbol: "icloud.slash", caption: "Handoff"))
+    }
+
+    /// Batch "Send Multiple…": the same ownership consent as the single-game path (asked once, then
+    /// remembered), then offer every chosen game. The consent alert is deferred so the picker sheet has
+    /// finished dismissing before it presents.
+    private func handleSendMultiple(_ games: [Game], target: String?) {
+        guard !games.isEmpty else { return }
+        if AppSettings.transferEnabled {
+            Task { await sendMultiple(games, target: target) }
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { sendMultipleConsent = (games, target) }
+        }
+    }
+
+    private func sendMultiple(_ games: [Game], target: String?) async {
+        guard ContinuityService.cloudKitUsable else {
+            AppNotifier.shared.post(.info(
+                "Sending needs iCloud — it isn’t set up on this build yet",
+                symbol: "icloud.slash", caption: "Handoff"))
+            return
+        }
+        playSendFlourish(games)
+        let dest = target ?? "your devices"
+        AppNotifier.shared.post(.info(
+            "Sending \(games.count) game\(games.count == 1 ? "" : "s") to \(dest)…",
+            symbol: "iphone.and.arrow.forward", caption: "Handoff"))
+        var sent = 0
+        for game in games where await continuity.offerROM(game: game, targetDevice: target) { sent += 1 }
+        let ok = sent == games.count
+        AppNotifier.shared.post(.info(
+            ok ? "Sent \(sent) game\(sent == 1 ? "" : "s") to \(dest)"
+               : sent == 0 ? "Couldn’t reach iCloud — try again"
+                           : "Sent \(sent) of \(games.count) — some couldn’t reach iCloud",
+            symbol: ok ? "checkmark.circle" : "icloud.slash", caption: "Handoff"))
     }
 
     private func handleImport(_ result: Result<[URL], Error>) {
@@ -311,15 +446,42 @@ struct LibraryView: View {
     /// Accept a transfer: download the offered ROM, import it, retire the cloud offer, then play the
     /// arrival animation. Once local, the game owns the accompanying session so the green resume capsule
     /// appears — a second tap continues where the other device left off.
-    private func handleTransfer(_ offer: (card: ContinuityCard, fileName: String)) async {
+    /// Receive one or many shared games in a single tap — imports each, retires each cloud offer, then
+    /// plays one arrival animation for the last cart and refreshes. Downloads a "pack" at once instead
+    /// of confirming one by one.
+    private func handleReceiveAll(_ offers: [(card: ContinuityCard, fileName: String)]) async {
+        var received: [(game: Game, cover: UIImage?, deviceName: String)] = []
+        for offer in offers {
+            if let one = await receiveOne(offer) {
+                received.append((one.game, one.cover, offer.card.metadata.deviceName))
+            }
+        }
+        await continuity.refreshBanner(for: library.games)
+        await continuity.refreshTransferOffer(for: library.games)
+        sendTargets = await continuity.sendTargets()
+        guard let last = received.last else { return }
+        // Focus the last received cart so the shelf centers it (its frame is the morph target), then
+        // celebrate its arrival, NameDrop-style. A batch also posts a "Received N games" summary.
+        if let idx = library.games.firstIndex(where: { $0.id == last.game.id }) { selected = idx }
+        withAnimation(.easeOut(duration: 0.2)) {
+            arrival = ArrivalInfo(game: last.game, deviceName: last.deviceName, cover: last.cover)
+        }
+        if received.count > 1 {
+            AppNotifier.shared.post(.info("Received \(received.count) games",
+                                          symbol: "square.and.arrow.down", caption: "Handoff"))
+        }
+    }
+
+    /// Download + import one shared game (no arrival / refresh — the caller batches those), returning the
+    /// imported game and its cover. Nil if the fetch/import fails or the bytes don't match.
+    private func receiveOne(_ offer: (card: ContinuityCard, fileName: String)) async -> (game: Game, cover: UIImage?)? {
         let romHash = offer.card.metadata.romHash
         guard let data = await continuity.downloadROM(romHash: romHash) else {
             importError = "Couldn’t fetch the game from your other device."
-            return
+            return nil
         }
-        // Name the imported file from the session's real title, not the sender's (possibly content-hash)
-        // filename — otherwise that hash becomes the game's title and defeats box-art lookup. Keep the
-        // sender's extension (it drives GBA/GBC system detection).
+        // Name the imported file from the offer's title, keeping the sender's extension (it drives
+        // GBA/GBC system detection).
         let ext = (offer.fileName as NSString).pathExtension
         let title = offer.card.metadata.romTitle
             .components(separatedBy: CharacterSet(charactersIn: "/\\:*?\"<>|"))
@@ -333,27 +495,27 @@ struct LibraryView: View {
             try? FileManager.default.removeItem(at: tmp)
             guard game.romHash == romHash else {
                 importError = "That transfer didn’t match the game."
-                return
+                return nil
             }
             // Apply the sender's box art (if any) before retiring the offer, so the cart shows the
             // exact same cover — a cleaned title often won't re-match the thumbnail repo here.
-            var arrivalCover: UIImage?
+            var cover: UIImage?
             if let coverData = await continuity.downloadROMCover(romHash: romHash) {
                 library.setCover(fromImageData: coverData, for: game)
-                arrivalCover = UIImage(data: coverData)
+                cover = UIImage(data: coverData)
+            }
+            // Land the sender's cartridge save so the game opens on their actual progress. This device
+            // didn't own the game (offers for owned games are filtered out), so there's nothing to
+            // overwrite. Fetch before clearing the offer — clearROM deletes the whole record.
+            if let battery = await continuity.downloadROMBattery(romHash: romHash), !battery.isEmpty {
+                let saveURL = SavePaths.directory(forHash: game.romHash).appendingPathComponent("battery.sav")
+                try? battery.write(to: saveURL, options: .atomic)
             }
             await continuity.clearROM(romHash: romHash)   // ROM is local now — keep the cloud copy ephemeral
-            await continuity.refreshBanner(for: library.games)
-            await continuity.refreshTransferOffer(for: library.games)
-            sendTargets = await continuity.sendTargets()
-            // Focus the received game so the shelf centers it (its frame becomes the morph target),
-            // then celebrate the arrival, NameDrop-style.
-            if let idx = library.games.firstIndex(where: { $0.id == game.id }) { selected = idx }
-            withAnimation(.easeOut(duration: 0.2)) {
-                arrival = ArrivalInfo(game: game, deviceName: offer.card.metadata.deviceName, cover: arrivalCover)
-            }
+            return (game, cover)
         } catch {
             importError = error.localizedDescription
+            return nil
         }
     }
 }
@@ -378,6 +540,8 @@ private struct CartShelf: View {
     var onContextSettings: (Game) -> Void
     /// (game, targetDevice) — targetDevice nil means broadcast to all the user's devices.
     var onContextSend: (Game, String?) -> Void
+    /// Open the multi-select send picker, pre-selecting this cartridge.
+    var onContextSendMultiple: (Game) -> Void
     var onContextDelete: (Game) -> Void
 
     private static let gap: CGFloat = 22
@@ -440,6 +604,9 @@ private struct CartShelf: View {
                                 } label: {
                                     Label("Send to…", systemImage: "iphone.and.arrow.forward")
                                 }
+                            }
+                            Button { onContextSendMultiple(games[i]) } label: {
+                                Label("Send Multiple…", systemImage: "square.on.square")
                             }
                             Button(role: .destructive) { onContextDelete(games[i]) } label: {
                                 Label("Delete", systemImage: "trash")
@@ -508,11 +675,14 @@ private struct CartCard: View {
     var isFocused: Bool = true
 
     var body: some View {
-        // Every cell is the same landscape size (so the coverflow's scroll math stays uniform). A GBA
-        // cart fills it; a Game Boy cart is genuinely smaller — portrait, at the cell's full height —
-        // and centers within the cell, so the shelf reads as a mix of real cartridge sizes.
+        // Every cell keeps the same landscape *width* (so the coverflow's scroll math stays uniform),
+        // but a Game Boy / Color cart is portrait and, at real scale, taller than a GBA cart — so it
+        // renders taller than the GBA cell, filling the row's vertical slack, and reads as a proper
+        // cartridge instead of a tiny chip. A GBA cart fills the landscape cell as before.
         let cellH = width / LibraryView.cardAspect
-        let cartW = game.system == .gba ? width : cellH * CartridgeView.cartAspect(for: game.system)
+        let isGBA = game.system == .gba
+        let cartH = isGBA ? cellH : cellH + 48                       // taller portrait cart (bounded by the row padding)
+        let cartW = isGBA ? width : cartH * CartridgeView.cartAspect(for: game.system)
         CartridgeView(
             system: game.system,
             cover: CoverStore.image(at: coverURL),
@@ -522,8 +692,8 @@ private struct CartCard: View {
             coverOpacity: isFocused ? 1 : 0.85,
             crop: game.coverCrop
         )
-        .frame(width: cartW, height: cellH)
-        .frame(width: width, height: cellH)   // center the (possibly narrower) cart in the uniform cell
+        .frame(width: cartW, height: cartH)
+        .frame(width: width, height: max(cellH, cartH))   // uniform width; the cell grows for a taller cart
         // Flatten the vector cart (Canvas) into one GPU texture so the carousel's scroll scaling is
         // pure compositing — without this the Canvas re-rasterises every frame as it scales and the
         // scroll visibly hitches (same trick the launch cinematic uses).
@@ -581,7 +751,7 @@ private struct NowPlayingCapsule: View {
                 Spacer(minLength: 4)
                 Image(systemName: "play.fill")
                     .font(.system(size: 15))
-                    .foregroundStyle(.green)
+                    .foregroundStyle(DS.accent)
                     .padding(.trailing, 12)
             }
             .padding(.leading, 8)
@@ -632,9 +802,22 @@ private struct NowPlayingCapsule: View {
 /// transfer); the normal resume capsule then appears for the actual continue.
 private struct TransferCapsule: View {
     let card: ContinuityCard
+    /// How many games are waiting (this card is the newest). >1 turns the capsule into a "pack" that
+    /// receives them all in one tap.
+    var count: Int = 1
     /// Runs the download + import; the parent view owns the async work and error surface.
     let accept: () async -> Void
     @State private var transferring = false
+
+    private var titleText: String {
+        count > 1 ? "\(count) games from \(card.metadata.deviceName)" : card.metadata.romTitle
+    }
+    private var subtitleText: String {
+        if transferring { return "Transferring…" }
+        return count > 1 ? "Tap to receive all" : "Transfer from \(card.metadata.deviceName)"
+    }
+
+    @State private var glow = false
 
     var body: some View {
         Button {
@@ -645,9 +828,9 @@ private struct TransferCapsule: View {
             HStack(spacing: 10) {
                 thumbnail
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(card.metadata.romTitle)
+                    Text(titleText)
                         .font(DS.mono(13, .semibold)).foregroundStyle(DS.textPrimary).lineLimit(1)
-                    Text(transferring ? "Transferring…" : "Transfer from \(card.metadata.deviceName)")
+                    Text(subtitleText)
                         .font(DS.mono(9)).foregroundStyle(DS.textTertiary).lineLimit(1)
                 }
                 Spacer(minLength: 4)
@@ -661,10 +844,15 @@ private struct TransferCapsule: View {
             .frame(maxWidth: .infinity)
             .frame(height: 54)
             .background(.ultraThinMaterial, in: Capsule())
-            .overlay(Capsule().stroke(Color.blue.opacity(0.35), lineWidth: 1))
+            .overlay(Capsule().stroke(Color.blue.opacity(glow ? 0.85 : 0.3), lineWidth: 1))
+            // A slow breathing halo so a waiting transfer quietly draws the eye without nagging.
+            .shadow(color: .blue.opacity(glow ? 0.55 : 0.12), radius: glow ? 14 : 5)
         }
         .buttonStyle(.plain)
         .disabled(transferring)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true)) { glow = true }
+        }
     }
 
     @ViewBuilder
@@ -674,6 +862,83 @@ private struct TransferCapsule: View {
                 .frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 7))
         } else {
             RoundedRectangle(cornerRadius: 7).fill(DS.background).frame(width: 40, height: 40)
+        }
+    }
+}
+
+/// The send "whoosh": the first three sent cartridges streak up off the top edge — toward iCloud —
+/// fanned and staggered, over a soft launch flash and glowing trail. Mirrors the macOS `SendFlourish`.
+/// Purely decorative; auto-dismisses via `onDone`.
+private struct SendFlourishView: View {
+    let games: [Game]
+    let covers: [String: URL]
+    let onDone: () -> Void
+
+    @State private var launched = false
+
+    var body: some View {
+        GeometryReader { geo in
+            let n = min(games.count, 3)
+            let cardW: CGFloat = 118
+            let startY = geo.size.height - 150      // near the shelf / send origin
+            ZStack {
+                // Launch flash — a quick radial bloom at the lift-off point.
+                Circle()
+                    .fill(RadialGradient(colors: [.white.opacity(0.7), .blue.opacity(0.35), .clear],
+                                         center: .center, startRadius: 0, endRadius: 85))
+                    .frame(width: 180, height: 180)
+                    .scaleEffect(launched ? 1.7 : 0.5)
+                    .opacity(launched ? 0 : 0.9)
+                    .position(x: geo.size.width / 2, y: startY)
+                    .animation(.easeOut(duration: 0.4), value: launched)
+
+                ForEach(Array(games.prefix(3).enumerated()), id: \.element.id) { i, game in
+                    let xOff: CGFloat = n == 1 ? 0 : (CGFloat(i) / CGFloat(n - 1) - 0.5) * 84
+                    CartCard(game: game, coverURL: covers[game.romHash], width: cardW, isFocused: true)
+                        .shadow(color: .blue.opacity(launched ? 0.65 : 0.25), radius: 16)
+                        .scaleEffect(launched ? 0.9 : 0.72)
+                        .opacity(launched ? 0 : 1)
+                        .position(x: geo.size.width / 2 + xOff,
+                                  y: launched ? -cardW : startY)
+                        .animation(.easeIn(duration: 0.8).delay(Double(i) * 0.07), value: launched)
+                }
+            }
+            .ignoresSafeArea()
+        }
+        .onAppear {
+            launched = true
+            let total = 0.8 + Double(max(0, min(games.count, 3) - 1)) * 0.07 + 0.15
+            DispatchQueue.main.asyncAfter(deadline: .now() + total) { onDone() }
+        }
+    }
+}
+
+/// The delete flourish: the removed game's cartridge **drops away** — falling under gravity, tumbling,
+/// and fading — while the shelf closes the gap behind it. Mirrors the macOS `DeleteFlourish`; pair with
+/// `SoundFX.playRemoved()`.
+private struct DeleteFlourishView: View {
+    let game: Game
+    let covers: [String: URL]
+    let onDone: () -> Void
+
+    @State private var dropped = false
+
+    var body: some View {
+        GeometryReader { geo in
+            let cardW: CGFloat = 150
+            CartCard(game: game, coverURL: covers[game.romHash], width: cardW, isFocused: true)
+                .rotationEffect(.degrees(dropped ? (game.romHash.hashValue % 2 == 0 ? 24 : -24) : 0))
+                .scaleEffect(dropped ? 0.7 : 1)
+                .opacity(dropped ? 0 : 1)
+                .shadow(color: .black.opacity(0.5), radius: 12, y: 8)
+                .position(x: geo.size.width / 2,
+                          y: dropped ? geo.size.height + cardW : geo.size.height / 2 - 24)
+                .animation(.easeIn(duration: 0.55), value: dropped)
+        }
+        .ignoresSafeArea()
+        .onAppear {
+            dropped = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { onDone() }
         }
     }
 }
@@ -754,6 +1019,7 @@ private struct TransferArrivalOverlay: View {
         withAnimation(.spring(response: 0.6, dampingFraction: 0.7)) { landed = true }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
             UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+            SoundFX.shared.playReceived()
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.1) { finish() }
     }
@@ -799,5 +1065,99 @@ private struct FocusedCartFrameKey: PreferenceKey {
     static let defaultValue: CGRect? = nil
     static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
         value = nextValue() ?? value
+    }
+}
+
+/// A multi-select picker for sending several games to the user's other devices at once — the batch
+/// companion to a cartridge's "Send to My Devices" long-press. A checklist of the library (the
+/// long-pressed cart pre-selected), an optional device target, and **Send** offers every checked game
+/// through the same private-iCloud transfer.
+private struct SendMultipleSheet: View {
+    let games: [Game]
+    let covers: [String: URL]
+    let preselect: Game.ID?
+    let sendTargets: [String]
+    var onSend: ([Game], String?) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selected: Set<Game.ID> = []
+    @State private var target: String?           // nil = all devices
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if !sendTargets.isEmpty {
+                    Section {
+                        Picker("Send to", selection: $target) {
+                            Text("All Devices").tag(String?.none)
+                            ForEach(sendTargets, id: \.self) { device in
+                                Text(device).tag(String?.some(device))
+                            }
+                        }
+                    }
+                }
+                Section {
+                    ForEach(games) { game in
+                        Button { toggle(game.id) } label: {
+                            HStack(spacing: 12) {
+                                cover(for: game)
+                                Text(game.displayTitle)
+                                    .font(DS.mono(14)).foregroundStyle(DS.textPrimary).lineLimit(1)
+                                Spacer(minLength: 8)
+                                Image(systemName: selected.contains(game.id) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selected.contains(game.id) ? DS.textPrimary : DS.textTertiary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } header: {
+                    HStack {
+                        Text("\(selected.count) selected")
+                        Spacer()
+                        Button(selected.count == games.count ? "Deselect All" : "Select All") {
+                            selected = selected.count == games.count ? [] : Set(games.map(\.id))
+                        }
+                        .textCase(nil)
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(DS.background)
+            .navigationTitle("Send to My Devices")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Send") {
+                        onSend(games.filter { selected.contains($0.id) }, target)
+                        dismiss()
+                    }
+                    .disabled(selected.isEmpty)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .onAppear { if let preselect { selected = [preselect] } }
+    }
+
+    private func toggle(_ id: Game.ID) {
+        if selected.contains(id) { selected.remove(id) } else { selected.insert(id) }
+    }
+
+    @ViewBuilder private func cover(for game: Game) -> some View {
+        Group {
+            if let url = covers[game.romHash] {
+                AsyncImage(url: url) { image in
+                    image.resizable().aspectRatio(contentMode: .fill)
+                } placeholder: {
+                    Color.white.opacity(0.06)
+                }
+            } else {
+                Color.white.opacity(0.06)
+                    .overlay { Image(systemName: "gamecontroller").foregroundStyle(DS.textTertiary) }
+            }
+        }
+        .frame(width: 42, height: 28)
+        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
     }
 }
