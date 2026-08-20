@@ -66,9 +66,12 @@ final class SoundFX {
     /// and a long smooth decay. Very quiet, slightly stereo-widened (the upper note detuned a hair
     /// between channels) so it reads as "classy and understated," not a notification blast.
     private static func makeReceivedChime(sampleRate: Double = 44_100) -> AVAudioPCMBuffer? {
+        // Long enough for the exponential decay to run out to near-silence before the buffer ends,
+        // so the tail is never hard-clipped.
+        let duration = 1.7
         guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2),
               let buffer = AVAudioPCMBuffer(pcmFormat: format,
-                                            frameCapacity: AVAudioFrameCount(sampleRate * 0.8)),
+                                            frameCapacity: AVAudioFrameCount(sampleRate * duration)),
               let ch = buffer.floatChannelData else { return nil }
         buffer.frameLength = buffer.frameCapacity
         let n = Int(buffer.frameLength)
@@ -88,15 +91,24 @@ final class SoundFX {
                        + 0.18 * sin(2 * .pi * f * 2 * t)
                        + 0.06 * sin(2 * .pi * f * 3 * t))
         }
+        // A smooth cosine release over the final stretch, so whatever amplitude remains eases to a
+        // true zero at the very end instead of clicking off.
+        let release = 0.45
         for i in 0..<n {
             let t = Double(i) / sampleRate
-            let e1 = env(t, decay: 0.5)
+            let e1 = env(t, decay: 0.55)
             let t2 = t - note2Start
-            let e2 = env(t2, decay: 0.5)
+            let e2 = env(t2, decay: 0.55)
             let base = voice(note1, t, e1)
             // Detune the upper note a touch per channel for a subtle stereo shimmer.
-            let left = base + voice(note2 - 0.8, t2, e2)
-            let right = base + voice(note2 + 0.8, t2, e2)
+            var left = base + voice(note2 - 0.8, t2, e2)
+            var right = base + voice(note2 + 0.8, t2, e2)
+            let remaining = duration - t
+            if remaining < release {
+                let taper = 0.5 * (1 - cos(.pi * remaining / release))   // 1 → 0, smooth at both ends
+                left *= taper
+                right *= taper
+            }
             ch[0][i] = Float(left)
             ch[1][i] = Float(right)
         }

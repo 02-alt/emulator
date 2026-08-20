@@ -23,6 +23,14 @@ EXE="emu-window"
 BUNDLE_ID="${BUNDLE_ID:-com.buildtoberemembered.encore}"
 IDENTITY="${SIGN_IDENTITY:-Developer ID Application: MATTHIEU FRANCOIS MILO COMALADA (JLR4F273N8)}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-emu-notary}"
+TEAM="${TEAM:-JLR4F273N8}"
+CONTAINER="${CONTAINER:-iCloud.com.buildtoberemembered.encore}"
+# For a CloudKit-enabled release, set PROFILE to a **Developer ID** macOS provisioning profile that
+# grants the container above (Production). Create it at developer.apple.com → Profiles → "Developer ID"
+# for App ID com.buildtoberemembered.encore with the iCloud capability. Leave unset to build without
+# iCloud (cross-device Send/Continue disabled). The container's schema must also be Deployed to
+# Production in the CloudKit console — see scripts/SHIPPING.md.
+PROFILE="${PROFILE:-}"
 
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
@@ -64,7 +72,26 @@ PLIST
 echo "▸ Code-signing (Developer ID + hardened runtime)…"
 # The SwiftPM resource bundles are *shallow* (data only, no Mach-O) — they get sealed as resources
 # when the app is signed, so we sign the app itself, not each bundle.
-codesign --force --options runtime --timestamp -s "$IDENTITY" "$APP"
+if [ -n "$PROFILE" ] && [ -f "$PROFILE" ]; then
+    echo "  + iCloud/CloudKit (Production) via profile: $PROFILE"
+    cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
+    ENT="$(mktemp)"; cat > "$ENT" <<ENTITLE
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>com.apple.application-identifier</key><string>$TEAM.$BUNDLE_ID</string>
+<key>com.apple.developer.team-identifier</key><string>$TEAM</string>
+<key>com.apple.developer.icloud-container-identifiers</key><array><string>$CONTAINER</string></array>
+<key>com.apple.developer.icloud-services</key><array><string>CloudKit</string></array>
+<key>com.apple.developer.icloud-container-environment</key><string>Production</string>
+</dict></plist>
+ENTITLE
+    codesign --force --options runtime --timestamp --entitlements "$ENT" -s "$IDENTITY" "$APP"
+    rm -f "$ENT"
+else
+    echo "  (no PROFILE set → building WITHOUT iCloud; cross-device Send/Continue disabled)"
+    codesign --force --options runtime --timestamp -s "$IDENTITY" "$APP"
+fi
 codesign --verify --strict --verbose=2 "$APP"
 
 echo "▸ Notarizing (uses keychain profile '$NOTARY_PROFILE' — run the one-time store-credentials first)…"
