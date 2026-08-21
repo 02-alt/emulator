@@ -25,7 +25,16 @@ struct ReleaseNote: Identifiable {
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
         ReleaseNote(
-            version: "1.1",
+            version: "0.2",
+            date: "August 2026",
+            headline: "A little more shine.",
+            highlights: [
+                .init(symbol: "hand.tap.fill",
+                      title: "Press and hold, in style",
+                      detail: "Long-press anything on the shelf and it lifts into a glossy black card with a living, iridescent shimmer around the edge — the same signature look across every menu."),
+            ]),
+        ReleaseNote(
+            version: "0.1",
             date: "August 2026",
             headline: "Your library travels with you.",
             highlights: [
@@ -43,7 +52,7 @@ enum ReleaseNotes {
                       detail: "Cartridges streak toward the cloud when you send and drop away when you delete — each with its own sound — and Game Boy Color carts now stand tall on the shelf."),
             ]),
         ReleaseNote(
-            version: "1.0",
+            version: "0.0",
             date: "August 2026",
             headline: "The first release of Encore GBA.",
             highlights: [

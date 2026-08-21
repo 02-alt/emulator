@@ -156,7 +156,7 @@ struct GBACartridgeView: View {
 
     /// Outer silhouette, clockwise from the top-left of the flat top edge. The top corners bulge
     /// out to full width (the shoulders) then taper back to the straight sides.
-    private static func silhouette(_ box: CGRect) -> Path {
+    static func silhouette(_ box: CGRect) -> Path {
         func F(_ fx: CGFloat, _ fy: CGFloat) -> CGPoint { pt(box, fx, fy) }
         let tiX: CGFloat = 0.041                          // flat top edge inset
         let sXL: CGFloat = 0.027, sXR: CGFloat = 0.973    // straight sides

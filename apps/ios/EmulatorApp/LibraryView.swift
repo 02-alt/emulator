@@ -19,6 +19,13 @@ struct LibraryView: View {
     @State private var selected = 0
     @State private var settingsGame: Game?
     @State private var detailsGame: Game?
+    /// Set when a Continue capsule (or its long-press menu of recent sessions) is chosen — pushes the
+    /// game with `resume: true`. Item-based so a menu Button can navigate (a NavigationLink can't live
+    /// in a `.contextMenu`); keyed on `Game`, distinct from the `PlayRequest` destination above.
+    @State private var resumeGame: Game?
+    /// True while the Continue "folder" is fanned open — a long-press spreads the recent sessions as
+    /// their own capsules over the shelf, dimmed behind a tap-away scrim.
+    @State private var continueFanOpen = false
     @State private var showSettings = false
     @State private var showSearch = false
     @State private var arrival: ArrivalInfo?
@@ -38,14 +45,25 @@ struct LibraryView: View {
     /// The user's other devices, so the context menu can offer "Send to → [device]". Empty → a plain
     /// broadcast "Send to My Devices".
     @State private var sendTargets: [String] = []
+    /// Ambience quick-access from the shelf's top-left toolbar button — the same background soundscape
+    /// the in-game audio popover controls, so it can be set (or muted) right from the library.
+    @State private var ambiencePopover = false
+    @AppStorage(SettingsKey.ambientScene) private var ambientSceneRaw = SettingsDefault.ambientScene
+    @AppStorage(SettingsKey.ambientVolume) private var ambientVolume = SettingsDefault.ambientVolume
 
-    /// A just-received transfer, driving the NameDrop-style arrival animation.
+    /// A just-received transfer, driving the NameDrop-style arrival animation. Built from the *offer*
+    /// (before the ROM downloads/imports) so the animation can start the instant the card is tapped;
+    /// `cover` is filled in as the art downloads.
     struct ArrivalInfo: Identifiable {
         let id = UUID()
-        let game: Game
+        let system: GameSystem
+        let title: String
         let deviceName: String
-        let cover: UIImage?
+        var cover: UIImage?
     }
+    /// Flips true once the background download/import finishes and the new cart is focused — the arrival
+    /// overlay then morphs into its real shelf slot (until then it holds, radar-waving).
+    @State private var arrivalReady = false
 
     // Every ROM extension we import, across all supported systems (GBA + Game Boy / Color), as UTTypes
     // for the Files picker. `.data` stays in the list too, so a ROM Files reports as plain data is
@@ -65,9 +83,11 @@ struct LibraryView: View {
         .onPreferenceChange(FocusedCartFrameKey.self) { focusedCartFrame = $0 }
         .overlay {
             if let arrival {
-                TransferArrivalOverlay(game: arrival.game, deviceName: arrival.deviceName,
-                                       cover: arrival.cover, targetFrame: focusedCartFrame) {
-                    self.arrival = nil   // cart has morphed into its shelf slot; remove the overlay
+                TransferArrivalOverlay(system: arrival.system, title: arrival.title,
+                                       deviceName: arrival.deviceName, cover: arrival.cover,
+                                       ready: arrivalReady, targetFrame: focusedCartFrame) {
+                    self.arrival = nil          // cart has morphed into its shelf slot; remove the overlay
+                    self.arrivalReady = false
                 }
                 .transition(.opacity)
                 .zIndex(20)
@@ -87,10 +107,31 @@ struct LibraryView: View {
                     .zIndex(26)
             }
         }
+        .overlay {
+            if continueFanOpen {
+                ContinueFolder(items: recentResolved,
+                               cover: { library.covers[$0] },
+                               source: { continuity.sourceLabel(for: $0) },
+                               onResume: { continueFanOpen = false; resumeGame = $0 },
+                               onClose: { withAnimation(.easeOut(duration: 0.22)) { continueFanOpen = false } })
+                    .transition(.opacity)
+                    .zIndex(30)
+            }
+        }
         .navigationDestination(for: PlayRequest.self) { GameView(game: $0.game, resume: $0.resume) }
+        .navigationDestination(item: $resumeGame) { GameView(game: $0, resume: true) }
         .navigationTitle("Library")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { ambiencePopover = true } label: {
+                    Image(systemName: ambientSceneRaw == AmbientScene.off.rawValue
+                          ? "speaker.wave.2" : "speaker.wave.2.fill")
+                }
+                .accessibilityLabel("Ambience")
+                .foregroundStyle(ambientSceneRaw == AmbientScene.off.rawValue ? DS.textSecondary : DS.accent)
+                .popover(isPresented: $ambiencePopover) { ambiencePopoverContent }
+            }
             if !library.games.isEmpty {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showSearch = true } label: { Image(systemName: "magnifyingglass") }
@@ -193,12 +234,15 @@ struct LibraryView: View {
 
     private var content: some View {
         GeometryReader { geo in
-            // Size the cart to the vertical space actually available (capped at the portrait size),
-            // so the title + handle always clear the bottom bar in the short landscape layout.
-            let cardH = min(Self.maxCardHeight, max(96, geo.size.height - 180))
+            // Landscape is vertically tight and its floating bars are shorter, so it reserves less
+            // chrome (letting the coverflow fill more of the short row) and tightens the vertical
+            // rhythm; portrait keeps its roomier spacing. Size the cart to the space actually
+            // available (capped at the portrait size) so the title + handle always clear the bars.
+            let landscape = geo.size.width > geo.size.height
+            let cardH = min(Self.maxCardHeight, max(96, geo.size.height - (landscape ? 120 : 180)))
             let cardW = cardH * Self.cardAspect
 
-            VStack(spacing: 20) {
+            VStack(spacing: landscape ? 12 : 20) {
                 Spacer(minLength: 0)
 
                 // Coverflow shelf: the centered cart is always `selected` (its title shows below, and
@@ -218,11 +262,15 @@ struct LibraryView: View {
                     onContextSend: { handleSend($0, target: $1) },
                     onContextSendMultiple: { sendPickerPreselect = $0 },
                     onContextDelete: { handleDelete($0) })
-                    .frame(height: cardH + 56)   // extra vertical room so taller GBC carts don't clip
+                    .frame(height: cardH + (landscape ? 50 : 56))   // room for taller GBC carts (cardH+48)
 
-                VStack(spacing: 8) {
+                VStack(spacing: landscape ? 4 : 8) {
                     focusedTitle
-                    detailsHandle
+                    // Landscape is too short to stack the handle below the title without it colliding
+                    // with the floating bottom bar — so drop the visible affordance there. Swipe-up on
+                    // the shelf (the simultaneousGesture below) still opens details, as does the context
+                    // menu, so nothing is lost but the redundant chevron.
+                    if !landscape { detailsHandle }
                 }
 
                 Spacer(minLength: 0)
@@ -303,11 +351,16 @@ struct LibraryView: View {
         let items = continuity.pendingTransfers
         if let first = items.first {
             TransferCapsule(card: first.card, count: items.count) { await handleReceiveAll(items) }
-                .contextMenu {
+                .contextMenu(menuItems: {
                     Button(role: .destructive) { continuity.dismissPendingTransfers() } label: {
                         Label(items.count > 1 ? "Dismiss All" : "Dismiss", systemImage: "xmark.circle")
                     }
-                }
+                }, preview: {
+                    PressMenuBox {
+                        TransferCapsule(card: first.card, count: items.count) { }
+                            .frame(width: 300)
+                    }
+                })
                 .padding(.horizontal, 16)
                 .padding(.top, 6)
                 // Swoop down from the top edge with a springy scale as it arrives.
@@ -315,6 +368,14 @@ struct LibraryView: View {
                     .combined(with: .scale(scale: 0.9, anchor: .top)))
                 .id(first.card.metadata.romHash)   // re-trigger the entrance when the lead game changes
         }
+    }
+
+    /// The three most-recent resumable sessions (newest first), resolved to their games — the contents
+    /// of the Continue "folder".
+    private var recentResolved: [(card: ContinuityCard, game: Game)] {
+        Array(continuity.recentSessions
+            .compactMap { c in game(forHash: c.metadata.romHash).map { (card: c, game: $0) } }
+            .prefix(3))
     }
 
     private var bottomBar: some View {
@@ -326,7 +387,10 @@ struct LibraryView: View {
                 ContinueStrip(
                     sessions: continuity.recentSessions,
                     game: { game(forHash: $0) },
-                    source: { continuity.sourceLabel(for: $0) })
+                    covers: library.covers,
+                    source: { continuity.sourceLabel(for: $0) },
+                    onResume: { resumeGame = $0 },
+                    onLongPress: { withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) { continueFanOpen = true } })
             } else {
                 Spacer(minLength: 0)
             }
@@ -338,6 +402,37 @@ struct LibraryView: View {
         // indicator per HIG (rather than sitting flush against the bottom safe-area inset).
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+    }
+
+    /// The shelf's ambience popover: pick a background soundscape and set its volume. Mirrors the
+    /// in-game audio popover's ambience section (same settings, same live `AmbientPlayer.apply()`),
+    /// minus the per-game volume — there's no game playing on the shelf.
+    private var ambiencePopoverContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Ambience").font(.headline)
+
+            Picker("Soundscape", selection: ambientBinding) {
+                ForEach(AmbientScene.allCases) { Text($0.title).tag($0.rawValue) }
+            }
+            .pickerStyle(.segmented)
+            if ambientSceneRaw != AmbientScene.off.rawValue {
+                HStack {
+                    Image(systemName: "cloud.rain").foregroundStyle(.secondary).frame(width: 22)
+                    Slider(value: ambientVolumeBinding, in: 0...1)
+                }
+            }
+        }
+        .padding()
+        .frame(width: 320)
+        .tint(DS.accent)
+        .presentationCompactAdaptation(.popover)
+    }
+
+    private var ambientBinding: Binding<Int> {
+        Binding(get: { ambientSceneRaw }, set: { ambientSceneRaw = $0; AmbientPlayer.shared.apply() })
+    }
+    private var ambientVolumeBinding: Binding<Double> {
+        Binding(get: { ambientVolume }, set: { ambientVolume = $0; AmbientPlayer.shared.apply() })
     }
 
     private func circleButton(_ icon: String, action: @escaping () -> Void) -> some View {
@@ -450,6 +545,24 @@ struct LibraryView: View {
     /// plays one arrival animation for the last cart and refreshes. Downloads a "pack" at once instead
     /// of confirming one by one.
     private func handleReceiveAll(_ offers: [(card: ContinuityCard, fileName: String)]) async {
+        guard let hero = offers.last else { return }   // the cart the animation lands on (last in the pack)
+        // Start the arrival the instant the card is tapped — from the offer's own info, before anything
+        // downloads. The overlay swoops the cart in and holds; the shelf is updated behind it, so when it
+        // morphs into the slot you're already sitting on the new cart.
+        let ext = (hero.fileName as NSString).pathExtension.lowercased()
+        let system: GameSystem = (ext == "gba") ? .gba : .gbc
+        let heroTitle = (hero.fileName as NSString).deletingPathExtension
+        arrivalReady = false
+        withAnimation(.easeOut(duration: 0.2)) {
+            arrival = ArrivalInfo(system: system, title: heroTitle,
+                                  deviceName: hero.card.metadata.deviceName, cover: nil)
+        }
+        // Pull the hero's cover in quickly so the flying cart shows real art (best-effort, non-blocking).
+        Task {
+            if let data = await continuity.downloadROMCover(romHash: hero.card.metadata.romHash),
+               let img = UIImage(data: data) { arrival?.cover = img }
+        }
+        // Download + import the whole pack in the background while the animation plays.
         var received: [(game: Game, cover: UIImage?, deviceName: String)] = []
         for offer in offers {
             if let one = await receiveOne(offer) {
@@ -459,13 +572,17 @@ struct LibraryView: View {
         await continuity.refreshBanner(for: library.games)
         await continuity.refreshTransferOffer(for: library.games)
         sendTargets = await continuity.sendTargets()
-        guard let last = received.last else { return }
-        // Focus the last received cart so the shelf centers it (its frame is the morph target), then
-        // celebrate its arrival, NameDrop-style. A batch also posts a "Received N games" summary.
-        if let idx = library.games.firstIndex(where: { $0.id == last.game.id }) { selected = idx }
-        withAnimation(.easeOut(duration: 0.2)) {
-            arrival = ArrivalInfo(game: last.game, deviceName: last.deviceName, cover: last.cover)
+        // Nothing imported (all fetches failed) → drop the overlay; the error is surfaced by receiveOne.
+        guard let last = received.last, let idx = library.games.firstIndex(where: { $0.id == last.game.id }) else {
+            withAnimation(.easeOut(duration: 0.2)) { arrival = nil }
+            arrivalReady = false
+            return
         }
+        // Focus the newly-arrived cart so the overlay's morph target is its real shelf slot, then release
+        // the morph — the overlay was holding until now. A batch also posts a "Received N games" summary.
+        withAnimation(.snappy) { selected = idx }
+        if let c = last.cover { arrival?.cover = c }
+        arrivalReady = true
         if received.count > 1 {
             AppNotifier.shared.post(.info("Received \(received.count) games",
                                           symbol: "square.and.arrow.down", caption: "Handoff"))
@@ -579,7 +696,7 @@ private struct CartShelf: View {
                         .opacity(1 - d * 0.45)                // …and dim with distance (depth)
                         .position(x: x, y: h / 2)
                         .zIndex(1 - d)                        // centre cart draws on top
-                        .contextMenu {
+                        .contextMenu(menuItems: {
                             Button { onContextDetails(games[i]) } label: {
                                 Label("Details", systemImage: "info.circle")
                             }
@@ -611,7 +728,21 @@ private struct CartShelf: View {
                             Button(role: .destructive) { onContextDelete(games[i]) } label: {
                                 Label("Delete", systemImage: "trash")
                             }
-                        }
+                        }, preview: {
+                            // Long-press lifts the cart as a holographic foil card that catches the
+                            // light with the phone's tilt — inside the glossy Apple-Intelligence box
+                            // that every press menu now shares.
+                            PressMenuBox {
+                                HolographicCartridge(
+                                    system: games[i].system,
+                                    cover: CoverStore.image(at: covers[games[i].romHash]),
+                                    title: games[i].displayTitle,
+                                    systemTag: games[i].system.shortName,
+                                    crop: games[i].coverCrop)
+                                    .frame(width: 240,
+                                           height: 240 / CartridgeView.cartAspect(for: games[i].system))
+                            }
+                        })
                         .onTapGesture {
                             if i == sel {
                                 let g = geo.frame(in: .global)
@@ -703,44 +834,122 @@ private struct CartCard: View {
     }
 }
 
-/// Apple-Music-style "now playing" capsule for the floating bottom bar: the last session's thumbnail,
-/// the game, and a Play button. Tapping resumes from the Continuity snapshot. Fills the space between
-/// the two circle buttons; glass background to match Apple Music's mini-player.
-/// A horizontally paging strip of resume capsules — one per in-progress game, newest first. With a
-/// single session it looks and behaves exactly like the old mini-player; with several (e.g. one paused
-/// on the phone and one on the Mac) you swipe between them, each labelled with its source device.
+/// The bottom bar's single "Continue" capsule. It shows the most-recent session and resumes it on
+/// tap; a long-press opens a menu of the last few sessions (no more side-swiping through them). A
+/// faint stacked edge peeks behind the capsule when there's more than one, hinting at the menu.
 private struct ContinueStrip: View {
     let sessions: [ContinuityCard]
     let game: (String) -> Game?
+    let covers: [String: URL]
     let source: (ContinuityCard) -> String?
+    let onResume: (Game) -> Void
+    /// Fired on long-press when there's more than one session — the parent opens the fan-out "folder"
+    /// of recent capsules (rendered at the root so it can spread over the whole shelf with a scrim).
+    var onLongPress: () -> Void
+
+    /// Resolve each card to its game (dropping any whose ROM is missing), newest first, capped at 4.
+    private var resolved: [(card: ContinuityCard, game: Game)] {
+        Array(sessions.compactMap { c in game(c.metadata.romHash).map { (card: c, game: $0) } }.prefix(4))
+    }
 
     var body: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 8) {
-                ForEach(sessions, id: \.metadata.romHash) { card in
-                    if let g = game(card.metadata.romHash) {
-                        NowPlayingCapsule(card: card, game: g, source: source(card))
-                            .containerRelativeFrame(.horizontal)   // one capsule per page
+        if let top = resolved.first {
+            // A plain view (not a Button) so tap-to-resume and long-press-to-expand are recognised as
+            // separate, mutually exclusive gestures — a hold no longer also fires the tap.
+            let capsule = NowPlayingCapsule(card: top.card, game: top.game,
+                                            coverURL: covers[top.card.metadata.romHash],
+                                            source: source(top.card))
+                .contentShape(Rectangle())
+                .onTapGesture { onResume(top.game) }
+
+            if resolved.count > 1 {
+                // A faint duplicate capsule peeking up behind hints that a long-press reveals the rest.
+                capsule
+                    .background(alignment: .top) {
+                        Capsule().fill(.ultraThinMaterial)
+                            .overlay(Capsule().stroke(DS.hairline, lineWidth: 0.75))
+                            .frame(height: 54)
+                            .padding(.horizontal, 12)
+                            .offset(y: -6)
+                            .opacity(0.55)
                     }
-                }
+                    // Long-press fans the recent sessions open like a folder — their own capsules, not
+                    // a text menu — so picking up an earlier game is a tap on the real thing.
+                    .onLongPressGesture(minimumDuration: 0.35) { onLongPress() }
+            } else {
+                capsule
             }
-            .scrollTargetLayout()
+        } else {
+            Spacer(minLength: 0)
         }
-        .scrollTargetBehavior(.viewAligned)
-        .scrollIndicators(.hidden)
-        .frame(height: 54)
     }
 }
 
+/// The Continue "folder", fanned open over the shelf: the recent sessions as their own upright capsules
+/// behind a tap-away scrim. Capsules stay straight (no tilt); the delight is the entrance — they rise
+/// and fade in with a short staggered spring, the stack unfurling from the bottom bar upward. Tap one
+/// to resume, tap the scrim to close.
+private struct ContinueFolder: View {
+    let items: [(card: ContinuityCard, game: Game)]
+    let cover: (String) -> URL?
+    let source: (ContinuityCard) -> String?
+    let onResume: (Game) -> Void
+    let onClose: () -> Void
+
+    /// Flips true on appear to drive the staggered rise-in.
+    @State private var shown = false
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            // Frosted-glass backdrop: blur the shelf behind the folder rather than a thin black tint —
+            // a see-through scrim let the busy carts show through and hurt legibility. The material
+            // obscures them while keeping a hint of depth. A faint dark wash lifts contrast further.
+            Rectangle()
+                .fill(.thinMaterial)
+                .overlay(Color.black.opacity(0.18))
+                .ignoresSafeArea()
+                .opacity(shown ? 1 : 0)
+                .animation(.easeOut(duration: 0.25), value: shown)
+                .onTapGesture { onClose() }
+
+            VStack(spacing: 12) {
+                ForEach(Array(items.enumerated()), id: \.element.card.metadata.romHash) { idx, item in
+                    Button { onResume(item.game) } label: {
+                        NowPlayingCapsule(card: item.card, game: item.game,
+                                          coverURL: cover(item.card.metadata.romHash),
+                                          source: source(item.card))
+                            .frame(maxWidth: 360)
+                    }
+                    .buttonStyle(.plain)
+                    .shadow(color: .black.opacity(0.5), radius: 14, y: 8)
+                    .opacity(shown ? 1 : 0)
+                    .offset(y: shown ? 0 : 26)
+                    .scaleEffect(shown ? 1 : 0.96, anchor: .bottom)
+                    // Bottom card first, then up the stack — the folder unfurls from the bar.
+                    .animation(.spring(response: 0.4, dampingFraction: 0.74)
+                        .delay(Double(items.count - 1 - idx) * 0.06), value: shown)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 40)   // sit lower, clear of the Library title above
+        }
+        .onAppear { shown = true }
+    }
+}
+
+/// Apple-Music-style "now playing" capsule: the session's cartridge thumbnail, the game's title +
+/// subtitle, and a Play glyph — glass background to match the mini-player. Purely visual; the enclosing
+/// `ContinueStrip` owns the tap-to-resume and long-press menu.
 private struct NowPlayingCapsule: View {
     let card: ContinuityCard
     let game: Game
+    /// The game's box art, so the mini cartridge carries the same label as the shelf.
+    var coverURL: URL? = nil
     /// The device this session came from, or nil when it's this device's own session.
     var source: String? = nil
 
     var body: some View {
-        NavigationLink(value: PlayRequest(game: game, resume: true)) {
-            HStack(spacing: 10) {
+        HStack(spacing: 10) {
                 thumbnail
                 VStack(alignment: .leading, spacing: 1) {
                     Text(game.displayTitle)
@@ -752,9 +961,9 @@ private struct NowPlayingCapsule: View {
                 Image(systemName: "play.fill")
                     .font(.system(size: 15))
                     .foregroundStyle(DS.accent)
-                    .padding(.trailing, 12)
+                    .padding(.trailing, 18)
             }
-            .padding(.leading, 8)
+            .padding(.leading, 14)
             .frame(maxWidth: .infinity)
             .frame(height: 54)
             .background(.ultraThinMaterial, in: Capsule())
@@ -773,21 +982,17 @@ private struct NowPlayingCapsule: View {
                     lineWidth: 0.75
                 )
             )
-        }
-        .buttonStyle(.plain)
+            .contentShape(Capsule())   // the whole capsule is the tap / long-press target
     }
 
-    @ViewBuilder
+    // The stylized cartridge — same visual language as the shelf and hero cart — reads crisp at this
+    // size and stays on-brand, unlike the raw GBA framebuffer (a muddy, arbitrarily-cropped thumbnail).
     private var thumbnail: some View {
-        if let data = card.thumbnailPNG, let image = UIImage(data: data) {
-            Image(uiImage: image).resizable().aspectRatio(contentMode: .fill)
-                .frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 7))
-        } else {
-            // No captured frame yet: preview the game's stylized cartridge label, like the shelf.
-            CartridgeView(system: game.system, cover: nil,
-                          title: game.displayTitle, systemTag: game.system.shortName)
-                .frame(width: 40, height: 40)
-        }
+        // No systemTag — the "GBA" stamp is redundant clutter at this thumbnail size.
+        CartridgeView(system: game.system, cover: CoverStore.image(at: coverURL),
+                      title: game.displayTitle, systemTag: "",
+                      crop: game.coverCrop)
+            .frame(width: 44, height: 44)
     }
 
     private var subtitle: String {
@@ -948,15 +1153,20 @@ private struct DeleteFlourishView: View {
 /// cart **morphs into its actual slot in the shelf** (glides + scales to the focused cart's measured
 /// frame) as the glow/scrim/text dissolve. Tap anywhere to dismiss early; auto-dismisses after a beat.
 private struct TransferArrivalOverlay: View {
-    let game: Game
+    let system: GameSystem
+    let title: String
     let deviceName: String
     let cover: UIImage?
+    /// True once the background import finished and the new cart is focused — the overlay holds (radar
+    /// waves) until then, so it never morphs into an empty/wrong slot.
+    let ready: Bool
     /// The focused shelf cart's frame in global coords — the exit-morph target. Nil ⇒ fade in place.
     let targetFrame: CGRect?
     let onDone: () -> Void
 
     @State private var landed = false
     @State private var leaving = false
+    @State private var minHoldElapsed = false
 
     private let cartW: CGFloat = 300
 
@@ -986,8 +1196,8 @@ private struct TransferArrivalOverlay: View {
                     .blur(radius: 6)
                     .position(restCenter)
 
-                CartridgeView(system: game.system, cover: cover, title: game.displayTitle,
-                              systemTag: game.system.shortName)
+                CartridgeView(system: system, cover: cover, title: title,
+                              systemTag: system.shortName)
                     .frame(width: cartW, height: cartH)
                     .shadow(color: .blue.opacity(0.55), radius: landed && !leaving ? 34 : 6, y: 12)
                     .rotationEffect(.degrees(landed ? 0 : -8))
@@ -997,7 +1207,7 @@ private struct TransferArrivalOverlay: View {
                 VStack(spacing: 5) {
                     Text("RECEIVED").font(DS.mono(11, .semibold)).tracking(3)
                         .foregroundStyle(.blue)
-                    Text(game.displayTitle).font(DS.mono(16, .bold))
+                    Text(title).font(DS.mono(16, .bold))
                         .foregroundStyle(DS.textPrimary)
                         .multilineTextAlignment(.center).lineLimit(2)
                     Text("from \(deviceName)").font(DS.mono(11))
@@ -1010,6 +1220,7 @@ private struct TransferArrivalOverlay: View {
             }
             .contentShape(Rectangle())
             .onAppear(perform: run)
+            .onChange(of: ready) { _, isReady in if isReady { maybeFinish() } }
             .onTapGesture(perform: finish)
         }
         .ignoresSafeArea()
@@ -1021,7 +1232,16 @@ private struct TransferArrivalOverlay: View {
             UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
             SoundFX.shared.playReceived()
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.1) { finish() }
+        // Minimum on-screen hold so the arrival always registers, then land as soon as the import's ready
+        // (the cart holds, radar-waving, if the download is still in flight).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) { minHoldElapsed = true; maybeFinish() }
+        // Safety net: never hang if the download stalls.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) { maybeFinish(force: true) }
+    }
+
+    private func maybeFinish(force: Bool = false) {
+        guard !leaving, force || (minHoldElapsed && ready) else { return }
+        finish()
     }
 
     private func finish() {
