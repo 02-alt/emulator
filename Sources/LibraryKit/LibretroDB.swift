@@ -36,7 +36,7 @@ public final class LibretroDB: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard !loaded else { return }
         loaded = true
-        guard let url = Bundle.module.url(forResource: resource, withExtension: "rdb"),
+        guard let url = Bundle.moduleResources?.url(forResource: resource, withExtension: "rdb"),
               let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return }
         parse([UInt8](data))
     }
