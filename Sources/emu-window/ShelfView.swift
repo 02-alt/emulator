@@ -39,6 +39,8 @@ final class LibraryDashboardView: NSView {
     private var scopeOptions: [Scope] = [.all, .hidden]   // drawer segments, in order (mirrors the titles)
     private var tiles: [CartridgeTileView] = []
     private var actionBar: GlassBar?           // Apple-Music-style footer capsule of actions
+    private var ambiencePopover: NSPopover?     // background-sound picker, hung off the footer bar
+    private var ambienceMonitor: Any?           // outside-click monitor while that popover is open
     private var continueBanner: ContinueBanner?   // top-left "Continue" pill for the last-played game
     private var continueBannerVisible = false
     private let filterDrawer = FilterDrawer(titles: ["All Games", "Hidden"])
@@ -414,17 +416,46 @@ final class LibraryDashboardView: NSView {
                   onClick: { [weak self] in if let g = self?.selectedGame { self?.onLaunch?(g) } }),
             .init(symbol: "magnifyingglass", tooltip: "Search", enabled: hasGame,
                   onClick: { [weak self] in self?.toggleSearch() }),
-            .init(symbol: "slider.horizontal.3", tooltip: "Settings",
-                  onClick: { [weak self] in self?.onConfigure?() }),
-            // Removing a game lives ONLY on the per-cartridge right-click menu (and the Delete key) —
-            // deliberately not in this footer bar, so it's never a stray click away.
+            // Add ROMs sits dead-centre — the shelf's primary "grow your library" action.
+            // (Removing a game lives ONLY on the per-cartridge right-click menu and the Delete key,
+            // deliberately not here, so it's never a stray click away.)
             .init(symbol: "plus", tooltip: "Add ROMs",
                   onClick: { [weak self] in self?.onAddROMs?() }),
+            // Background sound is otherwise only in Settings and in-game — surface it on the shelf too.
+            .init(symbol: "cloud", tooltip: "Background Sound",
+                  onClick: { [weak self] in self?.toggleAmbiencePanel() }),
+            .init(symbol: "slider.horizontal.3", tooltip: "Settings",
+                  onClick: { [weak self] in self?.onConfigure?() }),
         ]
         let bar = GlassBar(items: items)
         addSubview(bar)
         actionBar = bar
         layoutPrompts()
+    }
+
+    /// Hang the shared background-sound picker off the footer bar (same panel as the in-game toolbar).
+    /// Transient like a popover, with a global monitor so a click in another app closes it too.
+    private func toggleAmbiencePanel() {
+        if let p = ambiencePopover, p.isShown { p.performClose(nil); return }
+        guard let anchor = actionBar else { return }
+
+        let panel = AmbiencePanelView { _ in }   // the footer icon is a fixed cloud, nothing to re-sync
+        let vc = NSViewController()
+        vc.view = panel
+        vc.preferredContentSize = panel.frame.size
+
+        let pop = NSPopover()
+        pop.contentViewController = vc
+        pop.behavior = .transient
+        pop.appearance = NSAppearance(named: .darkAqua)
+        pop.delegate = self
+        pop.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)   // above the footer bar
+        ambiencePopover = pop
+        panel.beginControllerFocus()
+
+        ambienceMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak pop] _ in
+            pop?.performClose(nil)
+        }
     }
 
     func updateCover(for gameID: UUID, image: NSImage) {
@@ -897,5 +928,13 @@ private final class DropTargetOverlay: NSView {
         let top = bounds.midY + blockH / 2
         plus.draw(at: CGPoint(x: bounds.midX - ps.width / 2, y: top - ps.height))
         caption.draw(at: CGPoint(x: bounds.midX - cs.width / 2, y: top - ps.height - gap - cs.height))
+    }
+}
+
+extension LibraryDashboardView: NSPopoverDelegate {
+    /// Drop the outside-click monitor whenever the background-sound picker closes (however it closed).
+    func popoverDidClose(_ notification: Notification) {
+        if let m = ambienceMonitor { NSEvent.removeMonitor(m); ambienceMonitor = nil }
+        ambiencePopover = nil
     }
 }

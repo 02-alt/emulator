@@ -24,8 +24,8 @@ enum WhatsNew {
     static let items: [AppAlert.Feature] = [
         AppAlert.Feature(
             symbol: "iphone.and.arrow.forward",
-            title: "Send games across devices",
-            detail: "Send a game — or a whole pack at once — to your other devices through your own private iCloud. It arrives ready to play, saves and all, then the copy is deleted."
+            title: "Your library, on every device",
+            detail: "Your games follow you across your own devices through your private iCloud — it never leaves your account. Whatever you pick up arrives ready to play, saves and all, and the transfer copy clears once it lands."
         ),
         AppAlert.Feature(
             symbol: "arrow.down.circle",

@@ -27,11 +27,11 @@ enum ReleaseNotes {
         ReleaseNote(
             version: "1.1",
             date: "August 2026",
-            headline: "Share your games across your devices.",
+            headline: "Your library travels with you.",
             highlights: [
-                .init(symbol: "square.and.arrow.up",
-                      title: "Send games anywhere",
-                      detail: "Send a game — or a whole pack at once — to your other devices through your own private iCloud. It arrives ready to play, battery save and all, then the copy is deleted from iCloud."),
+                .init(symbol: "arrow.triangle.2.circlepath",
+                      title: "Your games, on every device",
+                      detail: "Your games follow you across your own devices through your private iCloud — never anyone else's account. Pick one up on another device and it's ready to play, battery save and all; the transfer copy clears from iCloud once it lands."),
                 .init(symbol: "arrow.down.circle.fill",
                       title: "See what's incoming",
                       detail: "A clear card shows a game waiting for you; tap once to receive the whole pack. Games you already have are skipped automatically."),

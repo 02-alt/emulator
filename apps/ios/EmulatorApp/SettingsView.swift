@@ -1,4 +1,5 @@
 import SwiftUI
+import LibraryKit
 
 /// App-wide settings. Edits persist to `UserDefaults` via `@AppStorage`; gameplay reads them at
 /// launch through `AppSettings`. Per-game overrides (the cart's Settings sheet) take precedence
@@ -25,10 +26,11 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.controlOpacity) private var controlOpacity = SettingsDefault.controlOpacity
     @AppStorage(SettingsKey.trophyNotifications) private var trophyNotifications = SettingsDefault.trophyNotifications
 
-    // RetroAchievements login. These keys match LibraryKit's `RACredentials` (which reads the same
-    // UserDefaults keys), so signing in here lights up trophies in each game's details sheet.
+    // RetroAchievements login. Username (a public handle) lives in UserDefaults; the Web API key is
+    // a secret, so it's kept in the Keychain via `RACredentials` — the same store the game details
+    // sheet reads to light up trophies. `raApiKey` seeds from the Keychain and writes back on edit.
     @AppStorage("ra.username") private var raUsername = ""
-    @AppStorage("ra.apiKey") private var raApiKey = ""
+    @State private var raApiKey = RACredentials.storedAPIKey ?? ""
 
     var body: some View {
         NavigationStack {
@@ -131,6 +133,9 @@ struct SettingsView: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                     SecureField("Web API Key", text: $raApiKey)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .onChange(of: raApiKey) { _, new in
+                            RACredentials.setAPIKey(new.trimmingCharacters(in: .whitespaces))
+                        }
                 } header: {
                     Text("RetroAchievements")
                 } footer: {

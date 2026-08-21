@@ -1,23 +1,90 @@
 import CryptoKit
 import Foundation
+import Security
 
-/// The player's RetroAchievements credentials (username + Web API key). Stored in UserDefaults;
-/// the key is obtained from the user's RA account settings page.
+/// The player's RetroAchievements credentials (username + Web API key). The username is a public
+/// handle and lives in UserDefaults; the **Web API key is a secret and lives in the Keychain**. The
+/// key is obtained from the user's RA account settings page.
 public struct RACredentials: Sendable {
     public let username: String
     public let apiKey: String
 
+    private static let usernameKey = "ra.username"
+    /// Keychain account name for the API key. This is also the *legacy* UserDefaults key it used to
+    /// live under, so ``storedAPIKey`` can migrate an old plaintext value out on first read.
+    private static let apiKeyAccount = "ra.apiKey"
+
     public static var stored: RACredentials? {
-        let d = UserDefaults.standard
-        guard let u = d.string(forKey: "ra.username"), !u.isEmpty,
-              let k = d.string(forKey: "ra.apiKey"), !k.isEmpty else { return nil }
+        guard let u = UserDefaults.standard.string(forKey: usernameKey), !u.isEmpty,
+              let k = storedAPIKey, !k.isEmpty else { return nil }
         return RACredentials(username: u, apiKey: k)
     }
     public static var isConfigured: Bool { stored != nil }
 
+    /// The API key from the Keychain. If an old build left one in UserDefaults, it's migrated into
+    /// the Keychain (and the plaintext copy deleted) the first time it's read, so upgrading users
+    /// keep their key without re-entering it.
+    public static var storedAPIKey: String? {
+        if let k = RAKeychain.get(account: apiKeyAccount), !k.isEmpty { return k }
+        if let legacy = UserDefaults.standard.string(forKey: apiKeyAccount), !legacy.isEmpty {
+            RAKeychain.set(legacy, account: apiKeyAccount)
+            UserDefaults.standard.removeObject(forKey: apiKeyAccount)
+            return legacy
+        }
+        return nil
+    }
+
     public static func store(username: String, apiKey: String) {
-        UserDefaults.standard.set(username, forKey: "ra.username")
-        UserDefaults.standard.set(apiKey, forKey: "ra.apiKey")
+        UserDefaults.standard.set(username, forKey: usernameKey)
+        setAPIKey(apiKey)
+    }
+
+    /// Persist just the API key to the Keychain (empty clears it). Also drops any stale plaintext
+    /// copy from UserDefaults so the secret never lingers there.
+    public static func setAPIKey(_ key: String) {
+        if key.isEmpty { RAKeychain.delete(account: apiKeyAccount) }
+        else { RAKeychain.set(key, account: apiKeyAccount) }
+        UserDefaults.standard.removeObject(forKey: apiKeyAccount)
+    }
+}
+
+/// Minimal Keychain string store for a single service. Items use `kSecAttrAccessibleAfterFirstUnlock`
+/// so background achievement checks can read the key while the device is locked.
+enum RAKeychain {
+    private static let service = "RetroAchievements"
+
+    private static func query(_ account: String) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: service,
+         kSecAttrAccount as String: account]
+    }
+
+    static func get(account: String) -> String? {
+        var q = query(account)
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func set(_ value: String, account: String) {
+        let data = Data(value.utf8)
+        let attrs: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+        ]
+        let status = SecItemUpdate(query(account) as CFDictionary, attrs as CFDictionary)
+        if status == errSecItemNotFound {
+            var add = query(account)
+            add.merge(attrs) { _, new in new }
+            SecItemAdd(add as CFDictionary, nil)
+        }
+    }
+
+    static func delete(account: String) {
+        SecItemDelete(query(account) as CFDictionary)
     }
 }
 

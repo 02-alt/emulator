@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var playControllers: [PlayWindowController] = []
     private var settings: SettingsWindowController?   // one shared window for library + play
     private var continueItem: NSMenuItem?             // File ▸ Continue “…” — refreshed as the menu opens
+    private var soundMenu: NSMenu?                     // Sound ▸ background-ambience scenes (checkmarked)
+    private var soundItems: [NSMenuItem] = []          // one per scene, kept to update the checkmark
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         applyDockIcon()
@@ -105,6 +107,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         editItem.submenu = editMenu
         mainMenu.addItem(editItem)
 
+        // Sound — reach the background ambience from anywhere, not just Settings and the play window.
+        // Fully keyboard/VoiceOver navigable; the checkmark tracks the current scene (see menuNeedsUpdate).
+        let soundItem = NSMenuItem()
+        let sound = NSMenu(title: "Sound")
+        sound.autoenablesItems = false
+        sound.delegate = self
+        soundItems = Settings.AmbientScene.allCases.map { scene in
+            let it = NSMenuItem(title: scene.title, action: #selector(selectAmbientScene(_:)), keyEquivalent: "")
+            it.target = self
+            it.tag = scene.rawValue
+            it.image = NSImage(systemSymbolName: AmbiencePanelView.symbol(scene), accessibilityDescription: nil)
+            sound.addItem(it)
+            return it
+        }
+        sound.addItem(.separator())
+        let louder = NSMenuItem(title: "Louder", action: #selector(ambienceLouder),
+                                keyEquivalent: String(UnicodeScalar(NSUpArrowFunctionKey)!))
+        louder.keyEquivalentModifierMask = [.command, .option]; louder.target = self
+        sound.addItem(louder)
+        let softer = NSMenuItem(title: "Softer", action: #selector(ambienceSofter),
+                                keyEquivalent: String(UnicodeScalar(NSDownArrowFunctionKey)!))
+        softer.keyEquivalentModifierMask = [.command, .option]; softer.target = self
+        sound.addItem(softer)
+        soundItem.submenu = sound
+        mainMenu.addItem(soundItem)
+        soundMenu = sound
+
         NSApp.mainMenu = mainMenu
     }
 
@@ -112,6 +141,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// always names the game you'd actually resume. Disabled with a plain "Continue" title when the
     /// library is empty or nothing's been played yet.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === soundMenu {
+            let current = Settings.shared.ambientScene.rawValue
+            for it in soundItems { it.state = it.tag == current ? .on : .off }
+            return
+        }
         guard let item = continueItem else { return }
         if let game = library?.lastPlayedGame {
             item.title = "Continue “\(game.displayTitle)”"
@@ -137,6 +171,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         src.draw(in: NSRect(origin: .zero, size: size), from: .zero, operation: .copy, fraction: 1)
         thumb.unlockFocus()
         return thumb
+    }
+
+    /// Sound ▸ pick a background-ambience scene (tag holds the ``Settings/AmbientScene`` raw value).
+    /// Writes straight to ``Settings``; the live ``AmbientPlayer`` and any open picker pick it up.
+    @objc private func selectAmbientScene(_ sender: NSMenuItem) {
+        Settings.shared.ambientScene = Settings.AmbientScene(rawValue: sender.tag) ?? .off
+    }
+
+    @objc private func ambienceLouder() { nudgeAmbienceVolume(0.1) }
+    @objc private func ambienceSofter() { nudgeAmbienceVolume(-0.1) }
+    private func nudgeAmbienceVolume(_ delta: Double) {
+        Settings.shared.ambientVolume = max(0, min(1, Settings.shared.ambientVolume + delta))
     }
 
     @objc private func revealCrashReports() {

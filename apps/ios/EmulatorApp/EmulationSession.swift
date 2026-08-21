@@ -52,6 +52,7 @@ final class EmulationSession: @unchecked Sendable {
 
     private var thread: Thread?
     private var running = false
+    private let didStop = DispatchSemaphore(value: 0)   // signaled once the loop has fully exited
 
     init(core: EmulatorCore, saveDirectory: URL? = nil) {
         self.core = core
@@ -137,8 +138,14 @@ final class EmulationSession: @unchecked Sendable {
     }
 
     func stop() {
+        guard thread != nil else { return }
         persistBattery()          // queue a final battery flush before the loop exits
         running = false
+        // Wait for the emulation thread to finish its current frame AND its final battery flush
+        // before returning: otherwise the next session could start reading a half-written save, and
+        // the core could be touched after teardown (use-after-free). Bounded — the loop re-checks
+        // `running` every frame — with a 2s safety cap in case the core ever wedges.
+        _ = didStop.wait(timeout: .now() + 2)
         thread = nil
         audio.stop()
     }
@@ -262,6 +269,7 @@ final class EmulationSession: @unchecked Sendable {
     // MARK: - Loop
 
     private func loop() {
+        defer { didStop.signal() }   // let stop() know the thread has fully exited (after the flush below)
         let baseInterval = 1.0 / refreshRate
         // Audio-master targets (in Int16 ring slots; a stereo frame = 2 slots). Keep ~4 video frames
         // of audio buffered; nudge the frame deadline to hold that fill so emulation tracks the audio
