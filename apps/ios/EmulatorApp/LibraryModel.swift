@@ -16,8 +16,29 @@ final class LibraryModel {
     private(set) var covers: [String: URL] = [:]
 
     init() {
+        reanchorROMPaths()   // repair paths left stale by an app-container UUID change (see below)
         importFromDocuments()
         reload()
+    }
+
+    /// Repair stale ROM paths. A `Game.romPath` is saved as an absolute path, and on iOS the Data
+    /// container's UUID changes when the app is reinstalled — so a path saved by a previous install
+    /// (`…/Application/<oldUUID>/…/roms/Game.gba`) no longer resolves, even though the ROM file itself
+    /// persists in the *current* container's romsDir. Re-anchor each game to the current romsDir by
+    /// filename so the ROM is always found (fixes Send/Continue/play silently failing after a reinstall).
+    private func reanchorROMPaths() {
+        let romsDir = AppPaths.romsDir
+        var changed = false
+        for game in store.games {
+            let current = romsDir.appendingPathComponent(game.romURL.lastPathComponent).path
+            guard game.romPath != current,
+                  FileManager.default.fileExists(atPath: current) else { continue }
+            var g = game
+            g.romPath = current
+            store.update(g)
+            changed = true
+        }
+        if changed { store.save() }
     }
 
     /// Auto-import any `.gba` sitting in the app's Documents directory (where Files shows the app
@@ -44,8 +65,10 @@ final class LibraryModel {
 
     /// Populate `covers` from the on-disk cache immediately, then fetch any that are missing from
     /// the public libretro-thumbnails repo (best-effort; well-named ROMs match, others stay blank).
+    /// Games the player has switched to the default label (a `.nocover` marker) are skipped entirely,
+    /// so they keep their stylized monogram cart instead of pulling art back down.
     private func refreshCovers() {
-        for game in games where covers[game.romHash] == nil {
+        for game in games where covers[game.romHash] == nil && !usesDefaultCover(game) {
             if let cached = coverService.cachedCoverURL(hash: game.romHash) {
                 covers[game.romHash] = cached
             }
@@ -54,12 +77,41 @@ final class LibraryModel {
     }
 
     private func fetchMissingCovers() async {
-        for game in games where covers[game.romHash] == nil {
+        for game in games where covers[game.romHash] == nil && !usesDefaultCover(game) {
             if let url = await coverService.fetchCover(
-                forStem: game.romFilenameStem, hash: game.romHash) {
+                forStem: game.romFilenameStem, hash: game.romHash, system: game.system) {
                 covers[game.romHash] = url
             }
         }
+    }
+
+    // MARK: - Default (stylized) cover
+
+    /// The marker file that pins a game to its default stylized cart label. Its presence means "don't
+    /// show or fetch box art for this game" — the cart falls back to the monogram label the cartridge
+    /// view draws when it has no cover.
+    private func defaultCoverMarker(hash: String) -> URL {
+        AppPaths.coversDir.appendingPathComponent("\(hash).nocover")
+    }
+
+    /// Whether this game is pinned to the default stylized label.
+    func usesDefaultCover(_ game: Game) -> Bool {
+        FileManager.default.fileExists(atPath: defaultCoverMarker(hash: game.romHash).path)
+    }
+
+    /// Pin a game to its default stylized cart label: drop any downloaded/custom art and mark it so the
+    /// auto-fetch leaves it alone. Reversible via `restoreDownloadedCover`.
+    func useDefaultCover(for game: Game) {
+        try? FileManager.default.createDirectory(at: AppPaths.coversDir, withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: AppPaths.coversDir.appendingPathComponent("\(game.romHash).png"))
+        FileManager.default.createFile(atPath: defaultCoverMarker(hash: game.romHash).path, contents: nil)
+        covers[game.romHash] = nil
+    }
+
+    /// Undo `useDefaultCover`: clear the marker and re-fetch the downloaded box art (if any exists).
+    func restoreDownloadedCover(for game: Game) {
+        try? FileManager.default.removeItem(at: defaultCoverMarker(hash: game.romHash))
+        Task { await fetchMissingCovers() }
     }
 
     /// Import a `.gba` the user picked in Files. Copies it into the app's ROM store so the library
@@ -104,6 +156,8 @@ final class LibraryModel {
             image.draw(in: CGRect(origin: .zero, size: size))
         }
         guard let jpeg = resized.jpegData(compressionQuality: 0.85) else { return }
+        // A chosen image overrides a prior "use default" choice.
+        try? FileManager.default.removeItem(at: defaultCoverMarker(hash: game.romHash))
         let url = AppPaths.coversDir.appendingPathComponent("\(game.romHash).png")
         try? jpeg.write(to: url, options: .atomic)
         // nil → url forces the row/cart to reload the image even though the path is unchanged.

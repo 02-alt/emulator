@@ -6,8 +6,8 @@ import Foundation
 /// appcast — the "Check for Updates" button in Settings drives this. (Full silent auto-install would
 /// be a later Sparkle upgrade.)
 enum UpdateChecker {
-    /// `owner/repo` of the PUBLIC GitHub repo that publishes releases. Set this to yours.
-    static let repo = "buildtoberemembered/encore"
+    /// `owner/repo` of the PUBLIC GitHub repo that publishes releases.
+    static let repo = "02-alt/emulator"
 
     enum Outcome {
         case upToDate
@@ -19,6 +19,7 @@ enum UpdateChecker {
     /// The running app's version (`CFBundleShortVersionString`), or nil for an unbundled dev build.
     static var currentVersion: String? {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+            ?? ProcessInfo.processInfo.environment["EMU_FAKE_VERSION"]
     }
 
     static func check(current: String) async -> Outcome {

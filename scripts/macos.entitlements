@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS iCloud entitlements for emu-window — the Mac half of cross-device Continue + "Send to My
+  Devices". This file is NOT wired into scripts/release.sh yet, on purpose: codesigning with these
+  entitlements FAILS unless the container is provisioned and the signing identity is authorised for
+  it, which would break the currently-working notarized release. Enable it only after the one-time
+  provisioning below (see scripts/archive-ios.sh step 3 for the iOS side — same container):
+
+    1. Apple Developer portal → Identifiers → your macOS app id → enable the iCloud capability and
+       assign the container `iCloud.com.buildtoberemembered.encore` (the SAME one the iOS app uses,
+       so both devices share one CloudKit database).
+    2. Create a macOS provisioning profile that includes that container; CloudKit for a directly-
+       distributed (Developer ID) Mac app needs the profile embedded, not just these entitlements.
+    3. In scripts/release.sh, embed the profile and change the codesign line to:
+         codesign --force --options runtime --timestamp \
+           --entitlements "$ROOT/scripts/macos.entitlements" -s "$IDENTITY" "$APP"
+    4. Deploy the CloudKit schema to Production in the CloudKit console.
+
+  Local-development testing (no notarization) can use the Development environment instead — flip
+  icloud-container-environment to Development and sign with a Development profile.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.com.buildtoberemembered.encore</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+	</array>
+	<key>com.apple.developer.icloud-container-environment</key>
+	<string>Production</string>
+</dict>
+</plist>

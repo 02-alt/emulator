@@ -19,7 +19,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     override init() {
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 460),
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 540),
             styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init()
         window.title = "Settings"
@@ -29,6 +29,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.titleVisibility = .visible
         window.animationBehavior = .none
         window.isReleasedWhenClosed = false
+        window.isMovable = false   // pinned to centre — it reads as a panel over the app, not a
+                                   // window you drag around
         window.level = .floating   // stays above the app's main window while open
         window.delegate = self
         settings.onCredentialsSaved = { [weak self] in self?.onClose?() }
@@ -38,9 +40,20 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     func show() {
         settings.refresh()   // this window is reused, so re-read Settings (values may have changed
                              // elsewhere while it was closed — e.g. the in-game ambience popover)
-        window.center()
+        centerOverApp()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Centre over the app's frontmost window (the library/play window) when there is one, so the
+    /// panel sits *inside* the app rather than dead-centre of the screen; fall back to `center()`.
+    private func centerOverApp() {
+        let host = NSApp.windows.first { $0 !== window && $0.isVisible && $0.canBecomeKey }
+        guard let host else { window.center(); return }
+        let f = window.frame, h = host.frame
+        window.setFrameOrigin(NSPoint(
+            x: h.midX - f.width / 2,
+            y: h.midY - f.height / 2))
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -147,7 +160,9 @@ final class SettingsView: NSView {
         addSubview(content)
 
         NSLayoutConstraint.activate([
-            rail.topAnchor.constraint(equalTo: topAnchor, constant: DS.Space.md),
+            // Rail and content share the same top inset so the first tab lines up with the first
+            // section header; the rail hugs the left edge a touch tighter, sidebar-style.
+            rail.topAnchor.constraint(equalTo: topAnchor, constant: DS.Space.lg),
             rail.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Space.md),
             rail.widthAnchor.constraint(equalToConstant: 150),
 
@@ -157,8 +172,8 @@ final class SettingsView: NSView {
             divider.widthAnchor.constraint(equalToConstant: 1),
 
             content.topAnchor.constraint(equalTo: topAnchor, constant: DS.Space.lg),
-            content.leadingAnchor.constraint(equalTo: divider.trailingAnchor, constant: DS.Space.xl),
-            content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Space.xl),
+            content.leadingAnchor.constraint(equalTo: divider.trailingAnchor, constant: DS.Space.lg),
+            content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Space.lg),
             content.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -DS.Space.lg),
         ])
 
@@ -245,6 +260,7 @@ final class SettingsView: NSView {
 
             stack.addArrangedSubview(header("Ambience"))
             let scene = PixelSegmented(titles: Settings.AmbientScene.allCases.map(\.title),
+                                       symbols: Settings.AmbientScene.allCases.map { AmbiencePanelView.symbol($0) },
                                        selected: Settings.shared.ambientScene.rawValue)
             scene.onChange = { Settings.shared.ambientScene = Settings.AmbientScene(rawValue: $0) ?? .off }
             stack.addArrangedSubview(row("Sound", scene))
@@ -309,8 +325,33 @@ final class SettingsView: NSView {
             stack.addArrangedSubview(row("Rewind", rewind))
             let resume = onOff(Settings.shared.autoResume) { Settings.shared.autoResume = $0 }
             stack.addArrangedSubview(row("Auto-Resume", resume))
+            let runAhead = onOff(Settings.shared.runAhead) { Settings.shared.runAhead = $0 }
+            stack.addArrangedSubview(row("Run Ahead", runAhead))
             stack.addArrangedSubview(hint("Rewind lets you hold R in-game to scrub back a few seconds. "
-                + "Auto-Resume reopens a game exactly where you left off."))
+                + "Auto-Resume reopens a game exactly where you left off. Run Ahead shaves a frame of "
+                + "input lag (~16 ms) for snappier controls, at a small CPU cost."))
+
+            stack.addArrangedSubview(header("Performance"))
+            let corner = CornerPicker(selected: Settings.shared.statsCorner.rawValue)
+            corner.onChange = { Settings.shared.statsCorner = Settings.StatsCorner(rawValue: $0) ?? .topLeft }
+            let cornerRow = row("Corner", corner)
+            cornerRow.isHidden = !Settings.shared.showStats   // the picker only matters when the overlay is on
+            let stats = onOff(Settings.shared.showStats) { [weak cornerRow] on in
+                Settings.shared.showStats = on
+                cornerRow?.isHidden = !on
+            }
+            stack.addArrangedSubview(row("Stats Overlay", stats))
+            stack.addArrangedSubview(cornerRow)
+            stack.addArrangedSubview(hint("Shows a small live readout — frame rate, % of full speed, and "
+                + "on-screen draw rate — pinned to a corner while you play."))
+
+            stack.addArrangedSubview(header("Handoff"))
+            let transfer = onOff(ContinuityService.transferEnabled) { ContinuityService.transferEnabled = $0 }
+            stack.addArrangedSubview(row("Transfer Games Between My Devices", transfer))
+            stack.addArrangedSubview(hint("Continue a game on another of your devices even if it doesn’t have "
+                + "the game yet: Encore copies it over through your own private iCloud — never our servers "
+                + "— and deletes the copy the moment your other device receives it. Only turn this on for "
+                + "games you legally own. We don’t condone piracy."))
 
         case .achievements:
             stack.addArrangedSubview(header("RetroAchievements"))
@@ -332,6 +373,19 @@ final class SettingsView: NSView {
                 }
             })
 
+            stack.addArrangedSubview(header("Notifications"))
+            let notif = onOff(Settings.shared.trophyNotifications) { on in
+                Settings.shared.trophyNotifications = on
+                if on { TrophyNotifier.requestAuthorization() }
+            }
+            stack.addArrangedSubview(row("Trophy Notifications", notif))
+            stack.addArrangedSubview(hint("Get a banner when you unlock an achievement — macOS asks for "
+                + "permission the first time. (Live in-game unlock detection arrives with full "
+                + "RetroAchievements support; this is the notification it will use.)"))
+            stack.addArrangedSubview(PixelButton(title: "Send Test Notification") {
+                TrophyNotifier.sendTest()
+            })
+
         case .storage:
             stack.addArrangedSubview(header("Files"))
             stack.addArrangedSubview(PixelButton(title: "Reveal ROMs Folder") {
@@ -344,7 +398,7 @@ final class SettingsView: NSView {
                 Self.reveal(AppPaths.screenshotsDir)
             })
             stack.addArrangedSubview(hint("This is the app's own ROMs folder. Add a game and its ROM is "
-                + "copied here, or drop .gba files straight in — they show up in your library "
+                + "copied here, or drop .gba / .gbc / .gb files straight in — they show up in your library "
                 + "automatically. Battery saves, save states, and screenshots live alongside it."))
 
             stack.addArrangedSubview(header("Cache"))
@@ -381,6 +435,24 @@ final class SettingsView: NSView {
             stack.addArrangedSubview(checkButton)
             stack.addArrangedSubview(updateStatus)
             stack.addArrangedSubview(downloadButton)
+
+            // Re-open the "What's New" card that greets you after an update — always re-readable here.
+            // Dormant on dev builds (no bundled version to describe), so only offer it when there is one.
+            if WhatsNew.version != nil {
+                let releaseNotes = PixelButton(title: "Release Notes") { [weak self] in
+                    WhatsNew.present(in: self?.window)
+                }
+                stack.addArrangedSubview(releaseNotes)
+            }
+
+            // Privacy — what leaves the device, and (mostly) what doesn't.
+            stack.addArrangedSubview(header("Privacy"))
+            stack.addArrangedSubview(hint("Encore has no servers of its own — we never receive your games, "
+                + "saves, or any data about how you play. Everything you import stays on your Mac, or in "
+                + "your own private iCloud, which only your devices can read. The app does reach the "
+                + "internet for a few things — box art and update checks (GitHub), achievements if you "
+                + "enable them (RetroAchievements), and Handoff sync (Apple iCloud) — so those services "
+                + "see those requests under their own privacy policies. None of it comes to us."))
 
             // Attribution for the third-party work the app is built on (legally required, and deserved).
             stack.addArrangedSubview(header("Built On"))
@@ -606,16 +678,24 @@ private final class SidebarItem: NSView {
 final class PixelSegmented: NSView {
     var onChange: ((Int) -> Void)?
     private let titles: [String]
+    private let symbols: [String]?   // when set, segments render as SF Symbol icons (labels become tooltips)
     private var selectedIndex: Int
     private let segW: CGFloat
     private let h: CGFloat = 30
 
-    init(titles: [String], selected: Int) {
+    /// Text segments sized to the widest label. Pass `symbols` (one SF Symbol name per segment) to get a
+    /// compact icon bar instead — `titles` are then used only as hover tooltips, so it stays accessible.
+    init(titles: [String], symbols: [String]? = nil, selected: Int) {
         self.titles = titles
+        self.symbols = symbols
         self.selectedIndex = selected
-        // Equal-width segments sized to the widest label.
-        let widest = titles.map { DS.Text.label($0, size: 13).size().width }.max() ?? 40
-        self.segW = (widest + DS.Space.md).rounded()
+        if symbols != nil {
+            self.segW = 42   // square-ish icon cells — far shorter than spelling every scene out
+        } else {
+            // Equal-width segments sized to the widest label.
+            let widest = titles.map { DS.Text.label($0, size: 13).size().width }.max() ?? 40
+            self.segW = (widest + DS.Space.md).rounded()
+        }
         super.init(frame: .zero)
         wantsLayer = true
     }
@@ -626,12 +706,19 @@ final class PixelSegmented: NSView {
     }
     override var isFlipped: Bool { true }
 
+    /// SF Symbol image tinted to `color` (palette config keeps the glyph a single flat colour).
+    private static func icon(_ symbol: String, color: NSColor) -> NSImage? {
+        let cfg = NSImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
+            .applying(.init(paletteColors: [color]))
+        return NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(cfg)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         let outer = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.75, dy: 0.75),
                                  xRadius: DS.Radius.control, yRadius: DS.Radius.control)
         DS.Color.hairlineStrong.setStroke(); outer.lineWidth = 1.5; outer.stroke()
 
-        for (i, title) in titles.enumerated() {
+        for i in titles.indices {
             let rect = CGRect(x: segW * CGFloat(i), y: 0, width: segW, height: bounds.height)
             if i == selectedIndex {
                 let fill = NSBezierPath(roundedRect: rect.insetBy(dx: 3, dy: 3),
@@ -644,9 +731,27 @@ final class PixelSegmented: NSView {
                 DS.Color.hairline.setStroke(); sep.lineWidth = 1; sep.stroke()
             }
             let color = i == selectedIndex ? DS.Color.background : DS.Color.textSecondary
-            let str = DS.Text.label(title, size: 13, color: color)
-            let size = str.size()
-            str.draw(at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2))
+            if let symbols, let img = Self.icon(symbols[i], color: color) {
+                let box = CGRect(x: rect.midX - img.size.width / 2, y: rect.midY - img.size.height / 2,
+                                 width: img.size.width, height: img.size.height)
+                img.draw(in: box, from: .zero, operation: .sourceOver, fraction: 1,
+                         respectFlipped: true, hints: nil)
+            } else {
+                let str = DS.Text.label(titles[i], size: 13, color: color)
+                let size = str.size()
+                str.draw(at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2))
+            }
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        // Icon segments carry no visible label, so surface the scene name on hover for discoverability.
+        guard symbols != nil else { return }
+        removeAllToolTips()
+        for i in titles.indices {
+            addToolTip(CGRect(x: segW * CGFloat(i), y: 0, width: segW, height: bounds.height),
+                       owner: titles[i] as NSString, userData: nil)
         }
     }
 
@@ -654,6 +759,63 @@ final class PixelSegmented: NSView {
     override func mouseDown(with event: NSEvent) {
         let x = convert(event.locationInWindow, from: nil).x
         let i = max(0, min(titles.count - 1, Int(x / segW)))
+        guard i != selectedIndex else { return }
+        selectedIndex = i
+        needsDisplay = true
+        onChange?(i)
+    }
+}
+
+// MARK: - Corner picker
+
+/// A compact 2×2 corner selector for the stats overlay: a small "screen" glyph with a lit dot in the
+/// chosen corner. Replaces a four-segment bar of long labels ("Bottom Right"…) that stretched nearly
+/// edge-to-edge. Indices match ``Settings/StatsCorner`` (topLeft, topRight, bottomLeft, bottomRight).
+private final class CornerPicker: NSView {
+    var onChange: ((Int) -> Void)?
+    private var selectedIndex: Int
+    private let w: CGFloat = 68
+    private let h: CGFloat = 44
+    private let inset: CGFloat = 11   // corner-dot centres, in from each edge
+
+    init(selected: Int) {
+        self.selectedIndex = selected
+        super.init(frame: .zero)
+        wantsLayer = true
+    }
+    required init?(coder: NSCoder) { fatalError("not implemented") }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: w, height: h) }
+    override var isFlipped: Bool { true }
+
+    /// Corner-dot centres, in view (flipped) coordinates, ordered to match ``StatsCorner``.
+    private var dotCentres: [CGPoint] {
+        [CGPoint(x: inset, y: inset),                          // topLeft
+         CGPoint(x: bounds.width - inset, y: inset),           // topRight
+         CGPoint(x: inset, y: bounds.height - inset),          // bottomLeft
+         CGPoint(x: bounds.width - inset, y: bounds.height - inset)]   // bottomRight
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        // The "screen" outline.
+        let screen = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.75, dy: 0.75),
+                                  xRadius: DS.Radius.control, yRadius: DS.Radius.control)
+        DS.Color.hairlineStrong.setStroke(); screen.lineWidth = 1.5; screen.stroke()
+
+        for (i, c) in dotCentres.enumerated() {
+            let selected = i == selectedIndex
+            let r: CGFloat = selected ? 5 : 3.5
+            let dot = NSBezierPath(ovalIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2))
+            (selected ? DS.Color.tileSelected : DS.Color.surfaceRaised).setFill()
+            dot.fill()
+        }
+    }
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        // Pick the nearer horizontal/vertical half — every click lands on a corner.
+        let i = (p.x > bounds.midX ? 1 : 0) + (p.y > bounds.midY ? 2 : 0)
         guard i != selectedIndex else { return }
         selectedIndex = i
         needsDisplay = true

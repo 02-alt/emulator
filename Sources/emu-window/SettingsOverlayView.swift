@@ -45,7 +45,7 @@ final class SettingsOverlayView: NSView {
 
         // Prefer the window's natural settings size, but never overflow a small play window.
         let w = panel.widthAnchor.constraint(equalToConstant: 720); w.priority = .defaultHigh
-        let h = panel.heightAnchor.constraint(equalToConstant: 480); h.priority = .defaultHigh
+        let h = panel.heightAnchor.constraint(equalToConstant: 540); h.priority = .defaultHigh
 
         NSLayoutConstraint.activate([
             panel.centerXAnchor.constraint(equalTo: centerXAnchor),

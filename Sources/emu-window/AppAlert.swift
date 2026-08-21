@@ -20,6 +20,15 @@ final class AppAlert: NSView {
         var handler: () -> Void = {}
     }
 
+    /// One highlighted change for a "What's new" card: an SF Symbol with a short title and a one-line
+    /// detail. Passing a non-empty `features:` list turns the alert into a release-notes card, with the
+    /// rows drawn between the message and the buttons.
+    struct Feature {
+        var symbol: String
+        var title: String
+        var detail: String
+    }
+
     private let dim = CALayer()
     private let card = NSView()
     private var defaultHandler: (() -> Void)?
@@ -32,18 +41,22 @@ final class AppAlert: NSView {
                         symbol: String? = "exclamationmark.triangle",
                         title: String,
                         message: String,
+                        features: [Feature] = [],
                         actions: [Action] = [Action(title: "OK", isDefault: true)]) -> Bool {
         guard let host = window?.contentView else { return false }
-        let alert = AppAlert(symbol: symbol, title: title, message: message, actions: actions)
+        let alert = AppAlert(symbol: symbol, title: title, message: message, features: features, actions: actions)
         alert.frame = host.bounds
         alert.autoresizingMask = [.width, .height]
         host.addSubview(alert)
+        // Float above the carousel's hero cart, which lifts itself with a raised layer zPosition
+        // (CoverView) — subview order alone wouldn't keep the modal on top of it.
+        alert.layer?.zPosition = 1000
         alert.animateIn()
         window?.makeFirstResponder(alert)
         return true
     }
 
-    private init(symbol: String?, title: String, message: String, actions: [Action]) {
+    private init(symbol: String?, title: String, message: String, features: [Feature], actions: [Action]) {
         super.init(frame: .zero)
         wantsLayer = true
         dim.backgroundColor = NSColor.black.withAlphaComponent(0.62).cgColor
@@ -96,7 +109,21 @@ final class AppAlert: NSView {
         messageField.isSelectable = true
         messageField.preferredMaxLayoutWidth = 340
         column.addArrangedSubview(messageField)
-        column.setCustomSpacing(DS.Space.lg, after: messageField)
+
+        // "What's new" rows, when present: an SF Symbol beside a title + one-line detail, stacked under
+        // the message. The button row gets a little breathing room below them (normal alerts keep their
+        // tight, message-hugging layout).
+        var lastInColumn: NSView = messageField
+        if !features.isEmpty {
+            column.setCustomSpacing(DS.Space.lg, after: messageField)
+            for feature in features {
+                let row = AppAlert.featureRow(feature)
+                column.addArrangedSubview(row)
+                column.setCustomSpacing(DS.Space.md, after: row)
+                lastInColumn = row
+            }
+        }
+        column.setCustomSpacing(DS.Space.lg, after: lastInColumn)
 
         // Buttons, laid out trailing with the default action on the right (platform convention).
         let buttons = NSStackView()
@@ -127,7 +154,7 @@ final class AppAlert: NSView {
             column.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: DS.Space.lg),
             column.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -DS.Space.lg),
 
-            buttons.topAnchor.constraint(equalTo: column.bottomAnchor),
+            buttons.topAnchor.constraint(equalTo: column.bottomAnchor, constant: features.isEmpty ? 0 : DS.Space.lg),
             buttons.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -DS.Space.lg),
             buttons.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -DS.Space.lg),
         ])
@@ -137,6 +164,45 @@ final class AppAlert: NSView {
     override func layout() {
         super.layout()
         dim.frame = bounds
+    }
+
+    /// A single "What's new" row: the SF Symbol on the left, a pixel title above a dim one-line detail.
+    private static func featureRow(_ feature: Feature) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .top
+        row.spacing = DS.Space.md
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        let icon = NSImageView()
+        if let img = NSImage(systemSymbolName: feature.symbol, accessibilityDescription: feature.title) {
+            icon.image = img
+        }
+        icon.symbolConfiguration = .init(pointSize: 18, weight: .regular)
+        icon.contentTintColor = DS.Color.textPrimary
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+        icon.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        row.addArrangedSubview(icon)
+
+        let text = NSStackView()
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = DS.Space.xs
+
+        let titleField = NSTextField(labelWithAttributedString:
+            DS.Text.plain(feature.title, size: 14, color: DS.Color.textPrimary))
+        titleField.isSelectable = false
+
+        let detailField = NSTextField(wrappingLabelWithString: "")
+        detailField.attributedStringValue = DS.Text.plain(feature.detail, size: 12, color: DS.Color.textSecondary)
+        detailField.isSelectable = false
+        detailField.preferredMaxLayoutWidth = 288
+
+        text.addArrangedSubview(titleField)
+        text.addArrangedSubview(detailField)
+        row.addArrangedSubview(text)
+
+        return row
     }
 
     // Modal: swallow every click that isn't on a button (the backdrop must not fall through to the

@@ -40,6 +40,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     /// per-game filter override. `nil` falls back to `Settings.shared.displayFilter`.
     var filterOverride: Settings.DisplayFilter?
 
+    /// Total frames actually presented to the screen. Sampled over time by the stats overlay to show
+    /// the on-screen draw rate (distinct from the emulation rate the driver reports).
+    private(set) var presentedFrames = 0
+
     init(driver: EmulationDriver, view: MTKView) {
         self.driver = driver
         self.frameBuffer = [UInt32](repeating: 0, count: driver.width * driver.height)
@@ -141,6 +145,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         cmd.present(drawable)
         cmd.commit()
 
+        presentedFrames += 1
         writeIndex = 1 - writeIndex
     }
 

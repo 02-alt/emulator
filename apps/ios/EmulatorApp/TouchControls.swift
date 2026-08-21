@@ -55,15 +55,11 @@ struct TouchControls: View {
         }
     }
 
-    /// Portrait: the game sits at the top, so controls stack in rows below it — shoulders, then
-    /// START/SELECT centered, then D-pad + faces at the bottom corners (prime thumb zone).
+    /// Portrait: the game sits at the top, so controls stack in rows below it — START/SELECT
+    /// centered, then D-pad + faces at the bottom corners (prime thumb zone). No L/R shoulders here:
+    /// they crowd the portrait layout, and games needing them can be played in landscape.
     private var portraitLayout: some View {
         VStack(spacing: 18) {
-            HStack {
-                shoulder("L", .l)
-                Spacer()
-                shoulder("R", .r)
-            }
             HStack(spacing: 16) {
                 pill("SELECT", .select)
                 pill("START", .start)

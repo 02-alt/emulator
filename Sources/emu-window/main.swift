@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var playControllers: [PlayWindowController] = []
     private var settings: SettingsWindowController?   // one shared window for library + play
     private var continueItem: NSMenuItem?             // File ▸ Continue “…” — refreshed as the menu opens
+    private var soundMenu: NSMenu?                     // Sound ▸ background-ambience scenes (checkmarked)
+    private var soundItems: [NSMenuItem] = []          // one per scene, kept to update the checkmark
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         applyDockIcon()
@@ -31,6 +33,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lib.show()
             library = lib
             installMenu(addGamesTarget: lib)
+            if ProcessInfo.processInfo.environment["EMU_DEBUG_TROPHY"] != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    let host = NSApp.windows.first { $0.contentView is LibraryDashboardView } ?? NSApp.keyWindow
+                    TrophyPop.show(in: host, title: "Minish Cap Master", points: 25)
+                }
+            }
         }
     }
 
@@ -38,7 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// (no `.app` bundle / Info.plist), so there's no `CFBundleIconFile` to pick it up — we set
     /// `applicationIconImage` at launch instead. Harmless no-op if the resource is ever missing.
     private func applyDockIcon() {
-        guard let url = Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
+        guard let url = Bundle.moduleResources?.url(forResource: "AppIcon", withExtension: "icns"),
               let image = NSImage(contentsOf: url) else {
             NSLog("emu-window: AppIcon.icns resource missing — using default Dock icon")
             return
@@ -99,6 +107,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         editItem.submenu = editMenu
         mainMenu.addItem(editItem)
 
+        // Sound — reach the background ambience from anywhere, not just Settings and the play window.
+        // Fully keyboard/VoiceOver navigable; the checkmark tracks the current scene (see menuNeedsUpdate).
+        let soundItem = NSMenuItem()
+        let sound = NSMenu(title: "Sound")
+        sound.autoenablesItems = false
+        sound.delegate = self
+        soundItems = Settings.AmbientScene.allCases.map { scene in
+            let it = NSMenuItem(title: scene.title, action: #selector(selectAmbientScene(_:)), keyEquivalent: "")
+            it.target = self
+            it.tag = scene.rawValue
+            it.image = NSImage(systemSymbolName: AmbiencePanelView.symbol(scene), accessibilityDescription: nil)
+            sound.addItem(it)
+            return it
+        }
+        sound.addItem(.separator())
+        let louder = NSMenuItem(title: "Louder", action: #selector(ambienceLouder),
+                                keyEquivalent: String(UnicodeScalar(NSUpArrowFunctionKey)!))
+        louder.keyEquivalentModifierMask = [.command, .option]; louder.target = self
+        sound.addItem(louder)
+        let softer = NSMenuItem(title: "Softer", action: #selector(ambienceSofter),
+                                keyEquivalent: String(UnicodeScalar(NSDownArrowFunctionKey)!))
+        softer.keyEquivalentModifierMask = [.command, .option]; softer.target = self
+        sound.addItem(softer)
+        soundItem.submenu = sound
+        mainMenu.addItem(soundItem)
+        soundMenu = sound
+
         NSApp.mainMenu = mainMenu
     }
 
@@ -106,6 +141,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// always names the game you'd actually resume. Disabled with a plain "Continue" title when the
     /// library is empty or nothing's been played yet.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === soundMenu {
+            let current = Settings.shared.ambientScene.rawValue
+            for it in soundItems { it.state = it.tag == current ? .on : .off }
+            return
+        }
         guard let item = continueItem else { return }
         if let game = library?.lastPlayedGame {
             item.title = "Continue “\(game.displayTitle)”"
@@ -133,6 +173,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return thumb
     }
 
+    /// Sound ▸ pick a background-ambience scene (tag holds the ``Settings/AmbientScene`` raw value).
+    /// Writes straight to ``Settings``; the live ``AmbientPlayer`` and any open picker pick it up.
+    @objc private func selectAmbientScene(_ sender: NSMenuItem) {
+        Settings.shared.ambientScene = Settings.AmbientScene(rawValue: sender.tag) ?? .off
+    }
+
+    @objc private func ambienceLouder() { nudgeAmbienceVolume(0.1) }
+    @objc private func ambienceSofter() { nudgeAmbienceVolume(-0.1) }
+    private func nudgeAmbienceVolume(_ delta: Double) {
+        Settings.shared.ambientVolume = max(0, min(1, Settings.shared.ambientVolume + delta))
+    }
+
     @objc private func revealCrashReports() {
         let dir = CrashReporter.directory
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -158,6 +210,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let gameID { self?.library?.recordPlaytime(gameID: gameID, seconds: seconds) }
         }
         playControllers.append(controller)
+    }
+
+    /// If a game's running inside the library window, defer termination briefly to publish its state
+    /// for cross-device resume ("quit on Mac, continue on iPhone"). Bounded by the flush's own timeout
+    /// so a stalled network can't hang the quit; otherwise quit immediately.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard library?.hasActivePlay == true else { return .terminateNow }
+        Task { @MainActor in
+            await library?.flushContinuityForTermination()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {

@@ -14,8 +14,19 @@ extern "C" {
 
 typedef struct GBABridge GBABridge;
 
+/// Which mGBA core a bridge wraps. The wire values are stable — Swift passes them straight through.
+enum BridgePlatform {
+    BRIDGE_PLATFORM_GBA = 0,   ///< Game Boy Advance
+    BRIDGE_PLATFORM_GB  = 1,   ///< Game Boy / Game Boy Color
+};
+
 /// Create and initialize a GBA core (no ROM yet). Returns NULL on failure.
 GBABridge* gba_bridge_create(void);
+
+/// Create and initialize a core for the given platform (no ROM yet). Returns NULL on failure.
+/// GBA carts need extra save-type/RTC fix-ups the bare core skips; the GB/GBC core auto-detects its
+/// own MBC and save hardware, so those overrides are only applied for `BRIDGE_PLATFORM_GBA`.
+GBABridge* gba_bridge_create_system(int platform);
 void gba_bridge_destroy(GBABridge* b);
 
 /// Load a .gba ROM from disk and reset. Returns false if the file isn't a valid ROM.
@@ -46,6 +57,11 @@ bool   gba_bridge_load_state(GBABridge* b, const void* buf, size_t len);
 size_t gba_bridge_save_data(GBABridge* b, void** out);
 void   gba_bridge_free(void* p);
 bool   gba_bridge_load_save_data(GBABridge* b, const void* data, size_t len);
+
+/// The linked libmgba's release version (e.g. "0.10.5"). Stable across builds of the same source,
+/// so macOS and iOS report an identical value — used to stamp savestates for Continuity's
+/// exact-match version gate (a state is only restorable by the build that wrote it).
+const char* gba_bridge_core_version(void);
 
 #ifdef __cplusplus
 }

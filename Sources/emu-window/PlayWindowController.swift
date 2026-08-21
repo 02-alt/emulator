@@ -3,6 +3,7 @@ import EmulatorCore
 import GBACore
 import LibraryKit
 import MetalKit
+import QuartzCore
 
 /// Per-game overrides a session applies over the global ``Settings`` at launch. Each `nil` means
 /// "inherit the app default". Built by the library from a ``Game``'s stored per-game settings.
@@ -30,6 +31,10 @@ final class PlaySession: NSObject {
     private let void: PlayVoidView
     private let saveStore: SaveStore?
     private var batteryTimer: Timer?
+    private var statsTimer: Timer?
+    /// Last stats sample: (wall-clock time, emulated-frame count, presented-frame count) — the deltas
+    /// between two samples give the live FPS and draw rate.
+    private var lastStatsSample: (time: CFTimeInterval, frames: Int, drawn: Int)?
     private var settingsObserver: NSObjectProtocol?
     private var settingsOverlay: SettingsOverlayView?
     private var pip: PiPWindowController?
@@ -61,14 +66,16 @@ final class PlaySession: NSObject {
     /// - Parameters:
     ///   - romURL: a real ROM, or nil to run the mock core.
     ///   - overrides: per-game settings applied over the global ``Settings`` (defaults to none).
-    init(romURL: URL?, title: String, overrides: GameOverrides = GameOverrides()) {
+    init(romURL: URL?, title: String, overrides: GameOverrides = GameOverrides(), resumeState: Data? = nil) {
         self.displayTitle = title
         self.isRealROM = romURL != nil
         self.overrides = overrides
         let core: EmulatorCore
         var store: SaveStore?
         if let romURL {
-            let gba = GBACore()
+            // One mGBA wrapper drives both cores; pick the one that matches the ROM's system so a
+            // Game Boy / Color cart boots on the GB core and a GBA cart on the GBA core.
+            let gba: MGBACore = GameSystem.infer(fromPath: romURL.path) == .gbc ? GBCore() : GBACore()
             var loaded = false
             do { try gba.loadROM(at: romURL); loaded = true }
             catch { NSLog("Failed to load ROM \(romURL.path): \(error)") }
@@ -78,7 +85,13 @@ final class PlaySession: NSObject {
                     gba.loadSaveData(battery)
                     NSLog("Loaded battery save (\(battery.count) bytes)")
                 }
-                if Settings.shared.autoResume, let suspend = s.read(s.suspendURL) {
+                if let resumeState {
+                    // Explicit cross-device resume ("Continue from iPhone"): the user asked for this
+                    // exact session, so honor it over any local suspend state and regardless of the
+                    // Auto-Resume setting. The core-version gate was already applied when fetching it.
+                    do { try gba.loadState(resumeState); NSLog("Resumed from cross-device Continuity state") }
+                    catch { NSLog("Cross-device state incompatible — starting fresh") }
+                } else if Settings.shared.autoResume, let suspend = s.read(s.suspendURL) {
                     do { try gba.loadState(suspend); NSLog("Auto-resumed from suspend state") }
                     catch { NSLog("Suspend state incompatible — starting fresh") }
                 }
@@ -101,6 +114,7 @@ final class PlaySession: NSObject {
         do { try audio.start() } catch { NSLog("Audio failed to start: \(error)"); audioStartFailed = true }
         audio.setVolume(Settings.shared.volume)
         driver.setRewindEnabled(Settings.shared.rewindEnabled)
+        driver.setRunAhead(Settings.shared.runAhead ? 1 : 0)
         driver.setSwapAB(overrides.swapAB ?? Settings.shared.swapAB)
         self.audio = audio
         self.controllers = GameControllerManager(driver: driver)
@@ -142,6 +156,10 @@ final class PlaySession: NSObject {
         void.onOpenSettings = { [weak self] in self?.toggleSettings() }
         void.onExit = { [weak self] in self?.onExit?() }
         void.onTogglePiP = { [weak self] in self?.togglePiP() }
+        void.provideSlots = { [weak self] count in self?.slots(count: count) ?? [] }
+        void.onSlotSave = { [weak self] n in self?.saveToSlot(n) }
+        void.onSlotLoad = { [weak self] n in self?.loadFromSlot(n) }
+        void.onSlotDelete = { [weak self] n in self?.deleteSlot(n) }
 
         // Controller "guide": the pad's Home button (or L3+R3) opens a paused, pad-navigable overlay.
         controllers.isGuideOpen = { [weak void] in void?.isGuideOpen ?? false }
@@ -156,6 +174,7 @@ final class PlaySession: NSObject {
         renderer.filterOverride = overrides.filter
         if let speed = overrides.speed { void.setSpeedDisplay(speed) }
         driver.start()
+        applyStatsSetting()
 
         // Apply Settings changes to this live session (volume + rewind capture) without a restart. The
         // per-game A/B swap wins over the global one so a settings change elsewhere can't clobber it.
@@ -165,7 +184,9 @@ final class PlaySession: NSObject {
                 guard let self else { return }
                 self.audio.setVolume(Settings.shared.volume)
                 self.driver.setRewindEnabled(Settings.shared.rewindEnabled)
+                self.driver.setRunAhead(Settings.shared.runAhead ? 1 : 0)
                 self.driver.setSwapAB(self.overrides.swapAB ?? Settings.shared.swapAB)
+                self.applyStatsSetting()
             }
         }
 
@@ -176,7 +197,52 @@ final class PlaySession: NSObject {
         }
     }
 
+    // MARK: - Performance HUD
+
+    /// Reflect the Settings ▸ Emulation "Stats Overlay" toggle: show/hide the corner HUD and run (or
+    /// stop) the sampling timer that feeds it. Called at launch and on every settings change.
+    private func applyStatsSetting() {
+        let on = Settings.shared.showStats
+        void.setStats(visible: on, corner: Settings.shared.statsCorner)
+        if on {
+            guard statsTimer == nil else { return }   // already sampling — just the corner moved
+            lastStatsSample = nil
+            let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.sampleStats() }
+            }
+            RunLoop.main.add(timer, forMode: .common)   // keep ticking during live resize/scroll
+            statsTimer = timer
+        } else {
+            statsTimer?.invalidate()
+            statsTimer = nil
+        }
+    }
+
+    /// Sample the driver's emulated-frame count and the renderer's presented-frame count, and turn the
+    /// deltas since the last tick into a live FPS / speed-% / draw-rate readout.
+    private func sampleStats() {
+        let now = CACurrentMediaTime()
+        let frames = driver.framesRunCount
+        let drawn = renderer.presentedFrames
+        defer { lastStatsSample = (now, frames, drawn) }
+        guard let last = lastStatsSample else { return }
+        let dt = now - last.time
+        guard dt > 0 else { return }
+        let fps = Double(frames - last.frames) / dt
+        let drawRate = Double(drawn - last.drawn) / dt
+        let speed = Int((fps / 60.0 * 100).rounded())
+        void.updateStats(fps: fps, speedPercent: speed, drawRate: drawRate)
+    }
+
     /// Save state + battery and stop the engine. Idempotent; safe to call on exit or app quit.
+    /// Snapshot for cross-device Continuity: the live machine state, a PNG of the current frame, and
+    /// seconds played this session. Real ROMs only; nil for the mock core or if state capture fails.
+    /// Must be called *before* ``saveAndStop`` tears the core down.
+    func captureContinuitySnapshot() -> (state: Data, thumbnailPNG: Data?, seconds: Int)? {
+        guard isRealROM, !didTeardown, let state = driver.saveState() else { return nil }
+        return (state, currentFramePNG(), Int(Date().timeIntervalSince(sessionStart)))
+    }
+
     func saveAndStop() {
         guard !didTeardown else { return }
         didTeardown = true
@@ -187,6 +253,7 @@ final class PlaySession: NSObject {
         metalView.isPaused = true
         metalView.delegate = nil
         batteryTimer?.invalidate()
+        statsTimer?.invalidate()
         if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
         if let store = saveStore {
             if let battery = driver.cloneSaveData() { store.write(battery, to: store.batteryURL) }
@@ -296,10 +363,61 @@ final class PlaySession: NSObject {
         }
     }
 
+    // MARK: - Save-state slots (numbered 1…N, with thumbnails, for the States browser)
+
+    /// Metadata for slots 1…count (empty entry when a slot holds nothing).
+    func slots(count: Int) -> [SaveSlot] {
+        guard let store = saveStore else { return (1...count).map { SaveSlot(index: $0, date: nil, thumbnail: nil) } }
+        return (1...count).map { n in
+            let url = store.slotURL(n)
+            guard store.exists(url) else { return SaveSlot(index: n, date: nil, thumbnail: nil) }
+            let thumb = store.read(store.slotThumbURL(n)).flatMap { NSImage(data: $0) }
+            return SaveSlot(index: n, date: store.modificationDate(url), thumbnail: thumb)
+        }
+    }
+
+    /// Save the machine state + a frame thumbnail into a numbered slot.
+    @discardableResult
+    func saveToSlot(_ n: Int) -> Bool {
+        guard let store = saveStore, let data = driver.saveState() else {
+            Toast.show(in: view.window, "Couldn’t save.", style: .error); return false
+        }
+        let ok = store.write(data, to: store.slotURL(n))
+        if ok, let png = currentFramePNG() { store.write(png, to: store.slotThumbURL(n)) }
+        Toast.show(in: view.window, ok ? "Saved to slot \(n)" : "Couldn’t save.", style: ok ? .success : .error)
+        return ok
+    }
+
+    /// Load a numbered slot.
+    @discardableResult
+    func loadFromSlot(_ n: Int) -> Bool {
+        guard let store = saveStore, let data = store.read(store.slotURL(n)) else {
+            Toast.show(in: view.window, "Slot \(n) is empty."); return false
+        }
+        let ok = driver.loadState(data)
+        Toast.show(in: view.window, ok ? "Loaded slot \(n)" : "Slot \(n) doesn’t match the game.",
+                   style: ok ? .success : .error)
+        return ok
+    }
+
+    /// Delete a numbered slot (state + thumbnail).
+    func deleteSlot(_ n: Int) {
+        guard let store = saveStore else { return }
+        store.remove(store.slotURL(n)); store.remove(store.slotThumbURL(n))
+    }
+
+    /// The current frame encoded as PNG (used for slot thumbnails).
+    private func currentFramePNG() -> Data? {
+        let w = driver.width, h = driver.height
+        var buffer = [UInt32](repeating: 0, count: w * h)
+        buffer.withUnsafeMutableBufferPointer { driver.copyLatestFrame(into: $0.baseAddress!) }
+        return PlaySession.pngData(rgba: buffer, width: w, height: h)
+    }
+
     /// Whether the emulator core can actually load this ROM — lets a launch fail with a friendly alert
     /// instead of crashing (or silently falling back to the mock core) on a corrupt or truncated file.
     static func canOpen(_ romURL: URL) -> Bool {
-        let probe = GBACore()
+        let probe: MGBACore = GameSystem.infer(fromPath: romURL.path) == .gbc ? GBCore() : GBACore()
         do { try probe.loadROM(at: romURL); return true } catch { return false }
     }
 
@@ -347,10 +465,13 @@ final class PlayWindowController: NSObject, NSWindowDelegate {
         window.animationBehavior = .none
         window.titlebarAppearsTransparent = true
         window.contentView = session.view
-        // Lock to the GBA's 3:2 so the game fills the window edge-to-edge with no letterbox bars.
-        window.contentAspectRatio = NSSize(width: 3, height: 2)
-        window.contentMinSize = NSSize(width: 480, height: 320)
-        window.setContentSize(contentRect.size)
+        // Lock to the game's native aspect (3:2 GBA, 10:9 Game Boy / Color) so it fills the window
+        // edge-to-edge with no letterbox bars. Inferred from the ROM; the mock core defaults to GBA.
+        let system = romURL.map { GameSystem.infer(fromPath: $0.path) } ?? .gba
+        window.contentAspectRatio = NSSize(width: system.screenSize.width, height: system.screenSize.height)
+        window.contentMinSize = NSSize(width: (320 * system.screenAspect).rounded(), height: 320)
+        window.setContentSize(NSSize(width: contentRect.width,
+                                     height: (contentRect.width / system.screenAspect).rounded()))
         window.center()
         window.delegate = self
 

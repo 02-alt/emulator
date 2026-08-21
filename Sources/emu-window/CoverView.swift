@@ -6,7 +6,7 @@ import LibraryKit
 /// carry a small pixel label beneath. When no cover art has been fetched, a generic cartridge
 /// silhouette stands in ("unknown cartridge"). Clicking asks the carousel to select-or-launch.
 @MainActor
-final class CartridgeTileView: NSView {
+class CartridgeTileView: NSView {
     let game: Game
     var onClick: ((Game) -> Void)?
     var onPlay: (() -> Void)?
@@ -15,6 +15,14 @@ final class CartridgeTileView: NSView {
     var onReveal: (() -> Void)?
     var onContextRemove: (() -> Void)?
     var onContextSettings: (() -> Void)?
+    /// (targetDevice) — nil means broadcast to all the user's devices.
+    var onContextSendTo: ((String?) -> Void)?
+    /// Open the multi-select send picker, pre-selecting this cartridge, so several games can be sent at
+    /// once. nil target is decided inside the picker.
+    var onContextSendMultiple: (() -> Void)?
+    /// The user's other devices, read lazily when the right-click menu opens (sync), so "Send to →"
+    /// can list them. Empty → a plain broadcast "Send to My Devices".
+    var sendTargets: () -> [String] = { [] }
 
     /// Drag-to-scrub, forwarded to the carousel: a press that moves becomes a horizontal drag; a
     /// press that doesn't is a plain click (select/launch).
@@ -47,6 +55,21 @@ final class CartridgeTileView: NSView {
     required init?(coder: NSCoder) { fatalError("not implemented") }
 
     func setCover(_ image: NSImage?) { cover = image; needsDisplay = true }
+
+    /// Render a game's full cartridge (Liquid-Glass body with its cover in the label window) to a
+    /// standalone image, so the send flourish can fly the *cartridge* rather than a bare cover. Drawn
+    /// offscreen at `side`×`side` with a transparent background, the cart centered.
+    static func cartridgeImage(for game: Game, side: CGFloat = 260) -> NSImage {
+        let tile = CartridgeTileView(game: game)
+        tile.frame = CGRect(x: 0, y: 0, width: side, height: side)
+        let image = NSImage(size: NSSize(width: side, height: side))
+        // The tile draws in a flipped (top-left origin) space and its glass reads the context's flip;
+        // lock focus flipped so the snapshot matches — plain lockFocus() renders it upside down.
+        image.lockFocusFlipped(true)
+        tile.draw(tile.bounds)
+        image.unlockFocus()
+        return image
+    }
 
     /// Update selection state and animate the scale/dim transition (the carousel drives this).
     func setSelected(_ selected: Bool, animated: Bool) {
@@ -162,14 +185,20 @@ final class CartridgeTileView: NSView {
         let pointSize: CGFloat = 15
         menu.font = .menuFont(ofSize: pointSize)
         let symbolCfg = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
-        func add(_ title: String, symbol: String, _ selector: Selector) {
-            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
-            item.target = self
+        func icon(_ symbol: String) -> NSImage? {
             let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
                 .withSymbolConfiguration(symbolCfg)
             image?.isTemplate = true   // adopt the menu's text colour (incl. highlighted state)
-            item.image = image
-            menu.addItem(item)
+            return image
+        }
+        func item(_ title: String, symbol: String, _ selector: Selector) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+            item.target = self
+            item.image = icon(symbol)
+            return item
+        }
+        func add(_ title: String, symbol: String, _ selector: Selector) {
+            menu.addItem(item(title, symbol: symbol, selector))
         }
 
         add("Play", symbol: "play.fill", #selector(contextPlay))
@@ -182,6 +211,32 @@ final class CartridgeTileView: NSView {
         menu.addItem(.separator())
         add("Show ROM in Finder", symbol: "folder", #selector(contextReveal))
         menu.addItem(.separator())
+
+        // Send: a plain broadcast item, or — once the user has other devices with sessions — a
+        // "Send to →" submenu that addresses one device (plus an "All My Devices" broadcast).
+        let targets = sendTargets()
+        if targets.isEmpty {
+            add("Send to My Devices", symbol: "iphone.and.arrow.forward", #selector(contextSendBroadcast))
+        } else {
+            let sendItem = item("Send to…", symbol: "iphone.and.arrow.forward", #selector(contextSendBroadcast))
+            sendItem.action = nil   // parent of a submenu isn't itself clickable
+            let submenu = NSMenu()
+            submenu.font = .menuFont(ofSize: pointSize)
+            for device in targets {
+                let deviceItem = NSMenuItem(title: device, action: #selector(contextSendToDevice(_:)), keyEquivalent: "")
+                deviceItem.target = self
+                deviceItem.image = icon("laptopcomputer.and.iphone")
+                deviceItem.representedObject = device
+                submenu.addItem(deviceItem)
+            }
+            submenu.addItem(.separator())
+            submenu.addItem(item("All My Devices", symbol: "square.stack.3d.up", #selector(contextSendBroadcast)))
+            sendItem.submenu = submenu
+            menu.addItem(sendItem)
+        }
+        // Pick several games to send in one go (opens a checklist, this cartridge pre-selected).
+        add("Send Multiple…", symbol: "square.on.square", #selector(contextSendMultiple))
+        menu.addItem(.separator())
         add("Remove from Library", symbol: "trash", #selector(contextRemove))
         return menu
     }
@@ -191,6 +246,9 @@ final class CartridgeTileView: NSView {
     @objc private func contextReveal() { onReveal?() }
     @objc private func contextRemove() { onContextRemove?() }
     @objc private func contextSettings() { onContextSettings?() }
+    @objc private func contextSendBroadcast() { onContextSendTo?(nil) }
+    @objc private func contextSendToDevice(_ sender: NSMenuItem) { onContextSendTo?(sender.representedObject as? String) }
+    @objc private func contextSendMultiple() { onContextSendMultiple?() }
 
     // MARK: - Hover
 
@@ -224,7 +282,10 @@ final class CartridgeTileView: NSView {
         // No background panel — the cartridge itself floats on the canvas. The body is Liquid Glass;
         // the fetched cover, if any, sits in its label window.
         let art = tile.insetBy(dx: side * 0.04, dy: side * 0.04)
-        drawGBACartridge(in: art)
+        switch game.system {
+        case .gba: drawGBACartridge(in: art)
+        case .gbc: drawGBCCartridge(in: art)
+        }
 
         if game.favorite { drawFavoriteBadge(in: tile) }
     }
@@ -425,6 +486,72 @@ final class CartridgeTileView: NSView {
         notch.move(to: F(0.405, 0.90))
         notch.line(to: F(0.595, 0.90))
         notch.line(to: F(0.5, 0.96))
+        notch.close()
+        groundColor.setFill()
+        notch.fill()
+    }
+
+    /// A Game Boy / Game Boy Color cartridge: a near-square **portrait** shell with the console's
+    /// hallmarks — ribbed thumb grips in the top corners, a recessed grip groove across the top, a
+    /// large **square** label window for cover art, and a small ▽ insertion arrow at the foot. Same
+    /// Liquid-Glass body + dark recesses as the GBA cart, so the two read as one family of carts.
+    /// Drawn in flipped coords (y grows down).
+    private func drawGBCCartridge(in rect: CGRect) {
+        // Portrait body: a hair taller than wide, centered in the square art region.
+        let aspect: CGFloat = 0.90                    // width ÷ height
+        let bw = min(rect.width, rect.height * aspect)
+        let bh = bw / aspect
+        let boxL = rect.midX - bw / 2, boxT = rect.midY - bh / 2
+        func F(_ fx: CGFloat, _ fy: CGFloat) -> CGPoint {
+            CGPoint(x: boxL + fx * bw, y: boxT + fy * bh)
+        }
+        let bbox = CGRect(x: boxL, y: boxT, width: bw, height: bh)
+
+        // Shell body — a rounded rectangle in Liquid Glass.
+        let body = NSBezierPath(roundedRect: bbox, xRadius: bw * 0.06, yRadius: bw * 0.06)
+        fillGlass(body, in: bbox)
+
+        // Slot keys: the small dark notches cut into the top edge just inside each shoulder.
+        groundColor.setFill()
+        for nx in [CGFloat(0.05), CGFloat(0.95)] {
+            let slot = CGRect(x: F(nx, 0).x - bw * 0.007, y: boxT,
+                              width: bw * 0.014, height: bh * 0.05)
+            NSBezierPath(roundedRect: slot, xRadius: bw * 0.006, yRadius: bw * 0.006).fill()
+        }
+
+        // Ribbed thumb grips: a few short vertical ridges tucked into each top corner.
+        let ribs = NSBezierPath()
+        for base in [CGFloat(0.055), CGFloat(0.85)] {          // left group, right group
+            for i in 0..<4 {
+                let x = boxL + (base + CGFloat(i) * 0.030) * bw
+                ribs.move(to: CGPoint(x: x, y: boxT + bh * 0.055))
+                ribs.line(to: CGPoint(x: x, y: boxT + bh * 0.125))
+            }
+        }
+        ribs.lineWidth = max(1, bw * 0.010)
+        ribs.lineCapStyle = .round
+        groundColor.setStroke()
+        ribs.stroke()
+
+        // Thumb groove: a recessed horizontal pill across the top center, between the two grips.
+        let grooveH = bh * 0.075
+        let groove = CGRect(x: F(0.20, 0).x, y: boxT + bh * 0.045,
+                            width: (0.80 - 0.20) * bw, height: grooveH)
+        groundColor.setFill()
+        NSBezierPath(roundedRect: groove, xRadius: grooveH / 2, yRadius: grooveH / 2).fill()
+
+        // Label window — square (matches `GameSystem.gbc.coverAspect`), holds the cover art or the
+        // blank default label.
+        let winSide = bw * 0.68
+        let win = CGRect(x: bbox.midX - winSide / 2, y: boxT + bh * 0.25,
+                         width: winSide, height: winSide)
+        fillLabel(NSBezierPath(roundedRect: win, xRadius: bw * 0.03, yRadius: bw * 0.03), bounds: win)
+
+        // Insertion arrow: a shallow ▽ centered beneath the label.
+        let notch = NSBezierPath()
+        notch.move(to: F(0.44, 0.915))
+        notch.line(to: F(0.56, 0.915))
+        notch.line(to: F(0.5, 0.955))
         notch.close()
         groundColor.setFill()
         notch.fill()

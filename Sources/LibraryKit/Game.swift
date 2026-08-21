@@ -4,16 +4,60 @@ import Foundation
 /// persistence/migration. 1.0 targets GBA; the enum is where future consoles land.
 public enum GameSystem: String, Codable, Sendable, CaseIterable {
     case gba
+    case gbc
 
-    public var shortName: String { "GBA" }
-    public var displayName: String { "Game Boy Advance" }
+    public var shortName: String {
+        switch self {
+        case .gba: return "GBA"
+        case .gbc: return "GBC"
+        }
+    }
 
-    /// Width÷height of the cartridge's cover label — a **landscape** slot on a GBA cart. The per-game
-    /// cover cropper locks to this so what you crop is exactly what shows on the cartridge (the tile
-    /// draws the cover aspect-fill into this same shape).
-    public var coverAspect: Double { 1.88 }
+    public var displayName: String {
+        switch self {
+        case .gba: return "Game Boy Advance"
+        case .gbc: return "Game Boy Color"
+        }
+    }
 
-    public static func infer(fromPath path: String) -> GameSystem { .gba }
+    /// Width÷height of the cartridge's cover label. The per-game cover cropper locks to this so what
+    /// you crop is exactly what shows on the cartridge (the tile draws the cover aspect-fill into this
+    /// same shape): a **landscape** slot on a GBA cart, a near-**square** label on a Game Boy cart.
+    public var coverAspect: Double {
+        switch self {
+        case .gba: return 1.88
+        case .gbc: return 1.0
+        }
+    }
+
+    /// Native screen resolution (width, height). Used to lock the play window's aspect so the game
+    /// fills it edge-to-edge with no letterbox bars: GBA is 240×160 (3:2), Game Boy / Color 160×144 (10:9).
+    public var screenSize: (width: Int, height: Int) {
+        switch self {
+        case .gba: return (240, 160)
+        case .gbc: return (160, 144)
+        }
+    }
+
+    /// Native screen aspect (width ÷ height).
+    public var screenAspect: Double {
+        Double(screenSize.width) / Double(screenSize.height)
+    }
+
+    /// The file extensions that map to this system, lowercased. `.gb` (original Game Boy) rides along
+    /// with the Game Boy Color — one mGBA core runs both, and they share the same cartridge shell.
+    public var fileExtensions: [String] {
+        switch self {
+        case .gba: return ["gba"]
+        case .gbc: return ["gbc", "gb"]
+        }
+    }
+
+    /// The console a ROM belongs to, from its file extension. Falls back to GBA for anything unknown.
+    public static func infer(fromPath path: String) -> GameSystem {
+        let ext = (path as NSString).pathExtension.lowercased()
+        return allCases.first { $0.fileExtensions.contains(ext) } ?? .gba
+    }
 }
 
 /// A normalized crop rectangle over a cover's source image: origin + size in `[0,1]`, measured from
