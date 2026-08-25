@@ -10,6 +10,9 @@ enum LaunchUpdatePrompt {
     /// (no bundle version to compare) and whenever another card is already up, so launch panels never
     /// stack — a deferred offer simply reappears next launch.
     static func checkAndPrompt(in window: NSWindow?) {
+        // Bundled builds auto-update through Sparkle (background check + its own prompt / in-place
+        // install), so skip this GitHub-link prompt to avoid offering the update twice.
+        if AppUpdater.shared.isSupported { return }
         guard let current = UpdateChecker.currentVersion else { return }   // unbundled dev build
         Task { @MainActor in
             guard case let .available(version, url) = await UpdateChecker.check(current: current) else { return }

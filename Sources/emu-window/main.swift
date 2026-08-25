@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         applyDockIcon()
+        AppUpdater.shared.startIfSupported()   // begin Sparkle background update checks (bundled builds)
         AmbientPlayer.shared.apply()   // resume any saved background ambience; then it self-drives
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--rom"), i + 1 < args.count {
@@ -66,6 +67,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.target = self
         appMenu.addItem(settings)
         appMenu.addItem(.separator())
+        // In-app auto-update (Sparkle). Shown only for bundled builds that carry an update feed —
+        // a raw `swift run` dev build can't update itself, so the item would just no-op.
+        if AppUpdater.shared.isSupported {
+            let updates = NSMenuItem(title: "Check for Updates…",
+                                     action: #selector(checkForUpdatesMenu), keyEquivalent: "")
+            updates.target = self
+            appMenu.addItem(updates)
+            appMenu.addItem(.separator())
+        }
         let reveal = NSMenuItem(title: "Reveal Crash Reports…",
                                 action: #selector(revealCrashReports), keyEquivalent: "")
         reveal.target = self
@@ -190,6 +200,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         NSWorkspace.shared.open(dir)
     }
+
+    /// App ▸ Check for Updates… — hands off to Sparkle's user-initiated update flow.
+    @objc private func checkForUpdatesMenu() { AppUpdater.shared.checkForUpdates() }
 
     /// Present the single shared Settings window (from the menu, the library, or a play window).
     @objc private func openSettings() {

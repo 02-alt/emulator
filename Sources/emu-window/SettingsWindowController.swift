@@ -421,20 +421,29 @@ final class SettingsView: NSView {
             stack.addArrangedSubview(header("Updates"))
             let version = UpdateChecker.currentVersion ?? "dev build"
             stack.addArrangedSubview(hint("You’re on version \(version)."))
-            let updateStatus = NSTextField(wrappingLabelWithString: "")
-            updateStatus.attributedStringValue = DS.Text.plain(" ", size: 12, color: DS.Color.textTertiary)
-            updateStatus.isSelectable = false
-            updateStatus.preferredMaxLayoutWidth = 380
-            let downloadButton = PixelButton(title: "Download update") { [weak self] in
-                if let url = self?.pendingUpdateURL { NSWorkspace.shared.open(url) }
+            if AppUpdater.shared.isSupported {
+                // Bundled build: Sparkle runs the whole flow — check, download, verify, install in
+                // place, relaunch. No browser, no manual drag.
+                let checkButton = PixelButton(title: "Check for Updates") { AppUpdater.shared.checkForUpdates() }
+                stack.addArrangedSubview(checkButton)
+                stack.addArrangedSubview(hint("Updates download and install automatically inside the app."))
+            } else {
+                // Dev / unbundled build (no update feed): fall back to the GitHub-link detection.
+                let updateStatus = NSTextField(wrappingLabelWithString: "")
+                updateStatus.attributedStringValue = DS.Text.plain(" ", size: 12, color: DS.Color.textTertiary)
+                updateStatus.isSelectable = false
+                updateStatus.preferredMaxLayoutWidth = 380
+                let downloadButton = PixelButton(title: "Download update") { [weak self] in
+                    if let url = self?.pendingUpdateURL { NSWorkspace.shared.open(url) }
+                }
+                downloadButton.isHidden = true
+                let checkButton = PixelButton(title: "Check for Updates") { [weak self, weak updateStatus, weak downloadButton] in
+                    self?.checkForUpdates(current: version, status: updateStatus, download: downloadButton)
+                }
+                stack.addArrangedSubview(checkButton)
+                stack.addArrangedSubview(updateStatus)
+                stack.addArrangedSubview(downloadButton)
             }
-            downloadButton.isHidden = true
-            let checkButton = PixelButton(title: "Check for Updates") { [weak self, weak updateStatus, weak downloadButton] in
-                self?.checkForUpdates(current: version, status: updateStatus, download: downloadButton)
-            }
-            stack.addArrangedSubview(checkButton)
-            stack.addArrangedSubview(updateStatus)
-            stack.addArrangedSubview(downloadButton)
 
             // Re-open the "What's New" card that greets you after an update — always re-readable here.
             // Dormant on dev builds (no bundled version to describe), so only offer it when there is one.

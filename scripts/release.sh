@@ -32,6 +32,12 @@ CONTAINER="${CONTAINER:-iCloud.com.buildtoberemembered.encore}"
 # Production in the CloudKit console — see scripts/SHIPPING.md.
 PROFILE="${PROFILE:-}"
 
+# Sparkle in-app auto-update. FEED_URL is served as a "latest release" asset so the URL is stable
+# across versions; SU_PUBKEY is the EdDSA public key whose private half (in the login keychain) signs
+# each update via scripts/make-appcast.sh. Public key is safe to embed.
+FEED_URL="${FEED_URL:-https://github.com/02-alt/emulator/releases/latest/download/appcast.xml}"
+SU_PUBKEY="${SU_PUBKEY:-F9r6QZCmbCoizKT7BHR94ZM8e7Hp2OLxs8IJiy7zxOU=}"
+
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
 REL=".build/release"
@@ -46,6 +52,10 @@ cp "$REL/$EXE" "$APP/Contents/MacOS/$EXE"
 cp icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 # SwiftPM resource bundles (fonts, DB, sounds) — Bundle.module finds them via the app's Resources.
 cp -R "$REL"/*.bundle "$APP/Contents/Resources/"
+# Sparkle auto-updater framework — the executable's @executable_path/../Frameworks rpath finds it here.
+echo "▸ Embedding Sparkle.framework…"
+mkdir -p "$APP/Contents/Frameworks"
+cp -R "$REL/Sparkle.framework" "$APP/Contents/Frameworks/"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -65,11 +75,24 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSHumanReadableCopyright</key><string>© buildtoberemembered</string>
+    <key>SUFeedURL</key><string>$FEED_URL</string>
+    <key>SUPublicEDKey</key><string>$SU_PUBKEY</string>
+    <key>SUEnableAutomaticChecks</key><true/>
 </dict>
 </plist>
 PLIST
 
 echo "▸ Code-signing (Developer ID + hardened runtime)…"
+# Sparkle first, bottom-up: re-sign every nested Mach-O (XPC services, the Autoupdate helper, the
+# Updater.app, then the framework itself) with our Developer ID + hardened runtime so notarization
+# accepts them. The sandboxed Downloader.xpc keeps its own entitlements (--preserve-metadata).
+FW="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+codesign -f -o runtime --timestamp --preserve-metadata=entitlements -s "$IDENTITY" "$FW/XPCServices/Downloader.xpc"
+codesign -f -o runtime --timestamp -s "$IDENTITY" "$FW/XPCServices/Installer.xpc"
+codesign -f -o runtime --timestamp -s "$IDENTITY" "$FW/Autoupdate"
+codesign -f -o runtime --timestamp -s "$IDENTITY" "$FW/Updater.app"
+codesign -f -o runtime --timestamp -s "$IDENTITY" "$APP/Contents/Frameworks/Sparkle.framework"
+
 # The SwiftPM resource bundles are *shallow* (data only, no Mach-O) — they get sealed as resources
 # when the app is signed, so we sign the app itself, not each bundle.
 if [ -n "$PROFILE" ] && [ -f "$PROFILE" ]; then

@@ -16,6 +16,11 @@ let package = Package(
         .executable(name: "emu-boot", targets: ["emu-boot"]),
         .executable(name: "emu-window", targets: ["emu-window"]),
     ],
+    dependencies: [
+        // In-app auto-update (macOS only): downloads + installs new releases in place, no browser.
+        // Sparkle ships as a binary xcframework via SwiftPM; release.sh embeds + signs it in the bundle.
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
+    ],
     targets: [
         // Core-agnostic contract every emulator core conforms to, plus a mock GBA
         // core so the whole app (render/audio/input/library) can be built and tested
@@ -69,8 +74,17 @@ let package = Package(
         // Live Metal window + flat "Analogue OS" library + glass play UI. AppKit + MetalKit (macOS).
         .executableTarget(
             name: "emu-window",
-            dependencies: ["EmulatorCore", "GBACore", "LibraryKit", "ContinuityKit"],
-            resources: [.process("Resources")]   // bundled Departure Mono pixel font (SIL OFL)
+            dependencies: [
+                "EmulatorCore", "GBACore", "LibraryKit", "ContinuityKit",
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
+            resources: [.process("Resources")],   // bundled Departure Mono pixel font (SIL OFL)
+            linkerSettings: [
+                // The assembled .app carries Sparkle.framework in Contents/Frameworks; teach the
+                // executable to find it there at runtime (SwiftPM's dev rpath points at .build only).
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"],
+                             .when(platforms: [.macOS])),
+            ]
         ),
 
         .testTarget(
