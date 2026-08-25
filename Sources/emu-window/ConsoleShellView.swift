@@ -54,6 +54,12 @@ final class PlayVoidView: NSView, NSPopoverDelegate {
     // Bottom glass toolbar
     private var toolbarGlass: NSView!
     private var saveBtn, loadBtn, speedBtn, shotBtn, padToggleBtn, ambienceBtn, settingsBtn: PlayerIconButton!
+    /// Solar-sensor toggle (Boktai / Lunar Knights). Present only when the cart has a light sensor;
+    /// installed after build via ``installLightControl()``.
+    private var lightBtn: PlayerIconButton?
+    /// Fired when the player taps the light toggle; the session flips the luminance and calls back
+    /// ``setLightState(on:)`` to update the icon.
+    var onToggleLight: (() -> Void)?
     private let sep1 = PlayVoidView.makeSeparator()
     private let sep2 = PlayVoidView.makeSeparator()
 
@@ -242,6 +248,26 @@ final class PlayVoidView: NSView, NSPopoverDelegate {
 
     private func barButton(_ symbol: String, _ tip: String, _ run: @escaping () -> Void) -> PlayerIconButton {
         PlayerIconButton(symbol: symbol, tooltip: tip, style: .bare, diameter: 32, behavior: .tap(run))
+    }
+
+    /// Add the solar-sensor "Light" toggle to the toolbar. Called by the session only for carts with a
+    /// light sensor. The icon shows the action: a sun while dark (tap to bring sunlight), a moon while
+    /// lit (tap to go dark).
+    func installLightControl() {
+        guard lightBtn == nil else { return }
+        let btn = barButton("sun.max.fill", "Light: off — tap for sunlight (L)") { [weak self] in
+            self?.onToggleLight?()
+        }
+        btn.onHoverChanged = { [weak self] button, entered in self?.showHint(entered ? button : nil) }
+        addSubview(btn)
+        lightBtn = btn
+        needsLayout = true
+    }
+
+    /// Reflect the latched solar-sensor state on the toolbar button.
+    func setLightState(on: Bool) {
+        lightBtn?.setSymbol(on ? "moon.fill" : "sun.max.fill")
+        lightBtn?.toolTip = on ? "Light: on — tap for darkness (L)" : "Light: off — tap for sunlight (L)"
     }
 
     /// Open (or close) the Save States browser popover, anchored to the toolbar's states button.
@@ -545,9 +571,10 @@ final class PlayVoidView: NSView, NSPopoverDelegate {
     /// Show or hide the chrome. In immersive mode "hidden" is the resting state; movement reveals it.
     private func setChrome(revealed: Bool) {
         let hidden = immersive && !revealed
-        let chrome: [NSView] = [backBtn, fullscreenBtn, immersiveBtn, volumeIcon, volumeSlider,
+        var chrome: [NSView] = [backBtn, fullscreenBtn, immersiveBtn, volumeIcon, volumeSlider,
                                 toolbarGlass, sep1, sep2, saveBtn, loadBtn, speedBtn, shotBtn,
                                 padToggleBtn, pipBtn, ambienceBtn, settingsBtn]
+        if let lightBtn { chrome.append(lightBtn) }
         chrome.forEach { $0.isHidden = hidden }
         if hidden { hint.isHidden = true }
     }
@@ -648,13 +675,15 @@ final class PlayVoidView: NSView, NSPopoverDelegate {
 
         // token list: buttons and separators, in order.
         enum Tok { case btn(PlayerIconButton), sep(NSView) }
-        let tokens: [Tok] = [
+        var tokens: [Tok] = [
             .btn(saveBtn), .btn(loadBtn),
             .sep(sep1),
             .btn(speedBtn),
             .sep(sep2),
-            .btn(shotBtn), .btn(padToggleBtn), .btn(ambienceBtn), .btn(settingsBtn),
+            .btn(shotBtn), .btn(padToggleBtn),
         ]
+        if let lightBtn { tokens.append(.btn(lightBtn)) }
+        tokens.append(contentsOf: [.btn(ambienceBtn), .btn(settingsBtn)])
         func width(_ t: Tok) -> CGFloat {
             if case let .btn(b) = t { return b.intrinsicContentSize.width } else { return sepW }
         }

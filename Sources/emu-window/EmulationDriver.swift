@@ -16,6 +16,8 @@ final class EmulationDriver: @unchecked Sendable {
     private let kbButtons = Atomic<UInt16>(0)
     private let padButtons = Atomic<UInt16>(0)
     private let touchButtons = Atomic<UInt16>(0)   // on-screen clickable controls
+    private let lightLevel = Atomic<UInt8>(0)      // solar-sensor light (0 dark … 255 full sun)
+    let hasLightSensor: Bool                       // this cart has a Boktai-style photodiode
     private let running = Atomic<Bool>(false)
     private let paused = Atomic<Bool>(false)
     private let fastForward = Atomic<Bool>(false)
@@ -47,6 +49,7 @@ final class EmulationDriver: @unchecked Sendable {
 
     init(core: EmulatorCore) {
         self.core = core
+        hasLightSensor = core.hasLightSensor
         (width, height) = core.videoSize
         sampleRate = core.audioSampleRate
         latestFrame = [UInt32](repeating: 0, count: width * height)
@@ -59,6 +62,8 @@ final class EmulationDriver: @unchecked Sendable {
     func setKeyboard(_ b: GBAButtons) { kbButtons.store(b.rawValue, ordering: .relaxed) }
     func setPad(_ b: GBAButtons) { padButtons.store(b.rawValue, ordering: .relaxed) }
     func setTouch(_ b: GBAButtons) { touchButtons.store(b.rawValue, ordering: .relaxed) }
+    /// Set the simulated solar-sensor light level (0 = dark … 255 = full sun), applied each frame.
+    func setLuminance(_ v: UInt8) { lightLevel.store(v, ordering: .relaxed) }
 
     func setPaused(_ on: Bool) { paused.store(on, ordering: .relaxed) }
     var isPaused: Bool { paused.load(ordering: .relaxed) }
@@ -185,6 +190,8 @@ final class EmulationDriver: @unchecked Sendable {
             }
 
             let frameStart = (mult > 1.0 && !ff) ? DispatchTime.now().uptimeNanoseconds : 0
+
+            if hasLightSensor { core.setLuminance(lightLevel.load(ordering: .relaxed)) }
 
             var held = kbButtons.load(ordering: .relaxed)
                 | padButtons.load(ordering: .relaxed)

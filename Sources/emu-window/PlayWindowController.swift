@@ -40,6 +40,7 @@ final class PlaySession: NSObject {
     private var pip: PiPWindowController?
     private let overrides: GameOverrides
     private var didTeardown = false
+    private var lightOn = false   // solar-sensor latched state (Boktai / Lunar Knights)
 
     let displayTitle: String
     private let isRealROM: Bool
@@ -161,6 +162,14 @@ final class PlaySession: NSObject {
         void.onSlotLoad = { [weak self] n in self?.loadFromSlot(n) }
         void.onSlotDelete = { [weak self] n in self?.deleteSlot(n) }
 
+        // Solar sensor (Boktai / Lunar Knights): surface a toolbar toggle + the L hotkey, but only for
+        // carts that actually have the photodiode.
+        if driver.hasLightSensor {
+            void.installLightControl()
+            void.onToggleLight = { [weak self] in self?.toggleLight() }
+            view.onToggleLight = { [weak self] in self?.toggleLight() }
+        }
+
         // Controller "guide": the pad's Home button (or L3+R3) opens a paused, pad-navigable overlay.
         controllers.isGuideOpen = { [weak void] in void?.isGuideOpen ?? false }
         controllers.onGuideToggle = { [weak void] in void?.toggleGuide() }
@@ -195,6 +204,17 @@ final class PlaySession: NSObject {
                 MainActor.assumeIsolated { self?.flushBattery() }
             }
         }
+    }
+
+    // MARK: - Solar sensor
+
+    /// Toggle the simulated solar sensor between full sun and darkness (Boktai / Lunar Knights). The
+    /// toolbar button and the L hotkey both call this; the driver applies the level each frame.
+    private func toggleLight() {
+        guard driver.hasLightSensor else { return }
+        lightOn.toggle()
+        driver.setLuminance(lightOn ? 255 : 0)
+        void.setLightState(on: lightOn)
     }
 
     // MARK: - Performance HUD

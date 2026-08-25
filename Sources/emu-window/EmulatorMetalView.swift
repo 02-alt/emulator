@@ -15,6 +15,7 @@ final class EmulatorMetalView: MTKView {
     var onScreenshot: (() -> Void)?    // P
     var onOpenSettings: (() -> Void)?  // ⌘,
     var onExit: (() -> Void)?          // Esc → back to the library
+    var onToggleLight: (() -> Void)?   // L toggles the solar sensor (set only for light-sensor carts)
 
     // Controller-guide overlay, also reachable/navigable from the keyboard (Tab opens; arrows move,
     // Return activates, Esc/Tab close). The pad drives the same overlay via GameControllerManager.
@@ -76,6 +77,7 @@ final class EmulatorMetalView: MTKView {
         case 101: onLoad?(); return         // F9
         case 35:  onScreenshot?(); return   // P
         case 53:  onExit?(); return         // Esc → back to the library
+        case 37:  if let onToggleLight { onToggleLight(); return }   // L: solar sensor (light carts only)
         default:  break
         }
         guard let button = keyMap[event.keyCode] else {
