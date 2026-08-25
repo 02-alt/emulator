@@ -80,7 +80,13 @@ struct GameView: View {
                 }
 
                 // The on-screen pad is always available (a connected controller works alongside it).
-                TouchControls { touchMask = $0; pushInput() }
+                // The solar "light" button appears only for cartridges with a real light sensor
+                // (Boktai / Lunar Knights): tap toggles full sun (on) vs darkness (off).
+                TouchControls(
+                    onChange: { touchMask = $0; pushInput() },
+                    showSolar: session.hasLightSensor,
+                    onSolar: { session.setLuminance($0 ? 255 : 0) }
+                )
                     .opacity(AppSettings.controlOpacity)
                     .ignoresSafeArea(.container, edges: .bottom)
 

@@ -47,6 +47,14 @@ public protocol EmulatorCore: AnyObject {
     /// Set the currently-held buttons for the next `runFrame`.
     func setButtons(_ buttons: GBAButtons)
 
+    /// Whether the loaded cartridge has a solar/light sensor (Boktai, Lunar Knights). Drives whether
+    /// the UI offers a "light" control. Defaults to false for cores/games without one.
+    var hasLightSensor: Bool { get }
+
+    /// Feed the simulated ambient light the solar sensor reads, 0 (dark) … 255 (full sun). No-op on
+    /// games without a light sensor.
+    func setLuminance(_ value: UInt8)
+
     /// Serialize full machine state (for save states, rewind, and run-ahead).
     func saveState() throws -> Data
 
@@ -61,6 +69,10 @@ public protocol EmulatorCore: AnyObject {
 }
 
 public extension EmulatorCore {
+    /// Most cores/games have no light sensor, so both members are optional to implement.
+    var hasLightSensor: Bool { false }
+    func setLuminance(_ value: UInt8) {}
+
     /// Convenience: pack a pixel the way `copyVideo` emits them — memory byte order R,G,B,A,
     /// matching libmgba's native 32-bit color_t and Metal's `.rgba8Unorm`.
     @inline(__always)

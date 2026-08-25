@@ -23,7 +23,13 @@ final class EmulationSession: @unchecked Sendable {
     private let frameLock = NSLock()
 
     private var buttons = GBAButtons()
+    private var luminance: UInt8 = 0        // solar-sensor light level, applied each frame (Boktai et al.)
     private let buttonLock = NSLock()
+
+    /// Whether this game's cartridge has a solar sensor (drives the on-screen "light" button). Read
+    /// once at init — the core already has its ROM loaded — so the UI can query it without touching
+    /// the core off the emulation thread.
+    let hasLightSensor: Bool
 
     // Playback state (speed multiplier + pause + rewind), read each iteration by the loop.
     private var speed = 1.0
@@ -57,6 +63,7 @@ final class EmulationSession: @unchecked Sendable {
     init(core: EmulatorCore, saveDirectory: URL? = nil) {
         self.core = core
         self.saveDirectory = saveDirectory
+        self.hasLightSensor = core.hasLightSensor
         (self.width, self.height) = core.videoSize
         self.refreshRate = type(of: core).system.refreshRate
         let count = width * height
@@ -76,6 +83,11 @@ final class EmulationSession: @unchecked Sendable {
 
     func setButtons(_ b: GBAButtons) {
         buttonLock.lock(); buttons = b; buttonLock.unlock()
+    }
+
+    /// Set the solar-sensor light level (0 = dark … 255 = full sun). Applied before each frame.
+    func setLuminance(_ value: UInt8) {
+        buttonLock.lock(); luminance = value; buttonLock.unlock()
     }
 
     // MARK: - Playback
@@ -298,8 +310,9 @@ final class EmulationSession: @unchecked Sendable {
                     drainAudio(mute: true)   // muted while scrubbing backward
                 }
             } else {
-                buttonLock.lock(); let held = buttons; buttonLock.unlock()
+                buttonLock.lock(); let held = buttons; let lux = luminance; buttonLock.unlock()
                 core.setButtons(held)
+                if hasLightSensor { core.setLuminance(lux) }
                 core.runFrame()
 
                 back.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!) }

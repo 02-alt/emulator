@@ -18,8 +18,20 @@ struct TouchControls: View {
     /// Called with the full held-button mask whenever it changes.
     let onChange: (GBAButtons) -> Void
 
+    /// Show the solar "light" button (only for cartridges with a light sensor).
+    var showSolar = false
+    /// Called when the solar button is pressed (true) / released (false).
+    var onSolar: (Bool) -> Void = { _ in }
+
     @State private var mask = GBAButtons()
     @State private var frames: [UInt16: CGRect] = [:]
+    @State private var solarDown = false   // solar bit currently pressed (for tap edge-detection)
+    @State private var solarOn = false     // latched light state: sun (on) vs moon (off)
+
+    // The solar button isn't a GBA key — it drives the light sensor, not the core's key mask. It rides
+    // the same multitouch layer (so it can be held alongside the D-pad) using a bit that can't collide
+    // with a real key (those are 1<<0…1<<9); it's stripped back out before the mask reaches the core.
+    private let solarBit = GBAButtons(rawValue: 1 << 15)
 
     private let padSpace = "TouchControlsPad"
     /// User-set button size. Scales layout dimensions, so the reported frames (and thus the
@@ -48,8 +60,13 @@ struct TouchControls: View {
             .onPreferenceChange(ButtonFramesKey.self) { frames = $0 }
             .overlay(
                 MultitouchPad(frames: frames) { newMask in
-                    mask = newMask
-                    onChange(newMask)
+                    mask = newMask   // full mask (incl. solar bit) drives the pressed-state dimming
+                    onChange(newMask.subtracting(solarBit))   // core never sees the non-key solar bit
+                    // Solar is a toggle, not a hold: each fresh press (rising edge) flips the latched
+                    // light state, so light stays on after you lift your finger until you tap again.
+                    let solarPressed = newMask.contains(solarBit)
+                    if solarPressed && !solarDown { solarOn.toggle(); onSolar(solarOn) }
+                    solarDown = solarPressed
                 }
             )
         }
@@ -60,9 +77,12 @@ struct TouchControls: View {
     /// they crowd the portrait layout, and games needing them can be played in landscape.
     private var portraitLayout: some View {
         VStack(spacing: 18) {
+            // Solar sits on the SELECT/START line (not its own row above it) so it stays below the
+            // game picture instead of creeping up into it.
             HStack(spacing: 16) {
                 pill("SELECT", .select)
                 pill("START", .start)
+                if showSolar { solarButton(diameter: barH) }
             }
             HStack(alignment: .bottom) {
                 dpad
@@ -83,7 +103,13 @@ struct TouchControls: View {
             shoulder("L", .l).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             shoulder("R", .r).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             dpad.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-            faceButtons.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+            // Solar circle rides directly above the A button (trailing-aligned over the right face
+            // button), within thumb reach of the face cluster.
+            VStack(alignment: .trailing, spacing: 14) {
+                if showSolar { solarButton(diameter: faceSide) }
+                faceButtons
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             HStack(spacing: 16) {
                 pill("SELECT", .select)
                 pill("START", .start)
@@ -172,6 +198,23 @@ struct TouchControls: View {
                 .overlay(Capsule().stroke(Color.white.opacity(0.4), lineWidth: 1))
                 .overlay(Text(label).font(.system(size: 12 * scale, weight: .medium)).foregroundStyle(.white.opacity(0.9)))
                 .frame(width: 104 * scale, height: barH)
+        }
+    }
+
+    /// Solar sensor control (Boktai / Lunar Knights). Tap to toggle. The icon shows the action, not
+    /// the current state: a warm sun while the light is OFF (tap to bring sunlight), a cool moon while
+    /// the light is ON (tap to go dark). Sized to match the row/cluster it sits in.
+    private func solarButton(diameter: CGFloat) -> some View {
+        let showSun = !solarOn                      // light off → offer the sun
+        let tint = showSun ? Color.yellow : Color.white
+        return padButton(solarBit) {
+            Circle()
+                .fill(tint.opacity(showSun ? 0.30 : 0.14))
+                .overlay(Circle().stroke(tint.opacity(showSun ? 0.75 : 0.4), lineWidth: 1))
+                .overlay(Image(systemName: showSun ? "sun.max.fill" : "moon.fill")
+                    .font(.system(size: 19 * scale, weight: .semibold))
+                    .foregroundStyle(.white))
+                .frame(width: diameter, height: diameter)
         }
     }
 }

@@ -64,6 +64,10 @@ public class MGBACore: EmulatorCore {
         gba_bridge_set_keys(handle, buttons.rawValue)
     }
 
+    public var hasLightSensor: Bool { gba_bridge_has_light_sensor(handle) }
+
+    public func setLuminance(_ value: UInt8) { gba_bridge_set_luminance(handle, value) }
+
     public func saveState() throws -> Data {
         let size = gba_bridge_state_size(handle)
         var data = Data(count: size)

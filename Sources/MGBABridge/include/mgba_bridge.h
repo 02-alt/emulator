@@ -48,6 +48,16 @@ int  gba_bridge_read_audio(GBABridge* b, int16_t* out, int max_frames);
 /// Set held buttons; bit order matches libmgba's GBA key indices.
 void gba_bridge_set_keys(GBABridge* b, uint16_t keys);
 
+/// Solar sensor (Boktai / Lunar Knights). True once a ROM whose cartridge has the photodiode is
+/// loaded — mGBA's built-in game database flags `HW_LIGHT_SENSOR` for those carts. The app shows its
+/// on-screen "light" button only when this is set. Meaningful only after `gba_bridge_load_rom`.
+bool gba_bridge_has_light_sensor(GBABridge* b);
+
+/// Set the simulated ambient light the solar sensor reads, 0 (darkness) … 255 (full sun). Replaces
+/// the physical photodiode: the app maps a held on-screen button to full sun, released to darkness.
+/// No-op on carts without a light sensor.
+void gba_bridge_set_luminance(GBABridge* b, uint8_t value);
+
 size_t gba_bridge_state_size(GBABridge* b);
 bool   gba_bridge_save_state(GBABridge* b, void* buf, size_t len);
 bool   gba_bridge_load_state(GBABridge* b, const void* buf, size_t len);

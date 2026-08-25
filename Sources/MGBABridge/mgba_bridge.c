@@ -15,6 +15,14 @@
 #define BRIDGE_SAMPLE_RATE 32768
 #define BRIDGE_AUDIO_BUFFER 2048
 
+// Simulated solar sensor. mGBA reads ambient light through a `GBALuminanceSource` callback pair; we
+// install one whose reading is a plain value the app drives (button held → full sun). `source` must
+// be the first member so the `GBALuminanceSource*` mGBA hands back casts straight to this struct.
+struct BridgeLuminance {
+    struct GBALuminanceSource source;
+    uint8_t value;
+};
+
 struct GBABridge {
     struct mCore* core;
     color_t* video;      // color_t is 32-bit in this build
@@ -22,7 +30,17 @@ struct GBABridge {
     unsigned height;
     int sampleRate;
     int platform;        // enum BridgePlatform — selects the core and which overrides apply
+    struct BridgeLuminance lux;
 };
+
+// mGBA calls sample() before readLuminance() to let a real sensor latch a fresh reading; ours is a
+// value the app sets directly, so there is nothing to latch.
+static void bridge_luminance_sample(struct GBALuminanceSource* s) { (void) s; }
+
+// Higher value = brighter, matching mGBA's own frontends (their brightness slider maxes at 0xFF).
+static uint8_t bridge_luminance_read(struct GBALuminanceSource* s) {
+    return ((struct BridgeLuminance*) s)->value;
+}
 
 // Re-query the core's desired output size and, if it changed, grow/shrink our video buffer to match.
 // Needed because the GB/GBC core reports a placeholder size until a ROM is loaded and its model is
@@ -72,6 +90,15 @@ GBABridge* gba_bridge_create_system(int platform) {
 
     b->sampleRate = BRIDGE_SAMPLE_RATE;
     bridge_apply_buffers(b);
+
+    // Install the solar-sensor luminance source (GBA only; the peripheral type is GBA-specific).
+    // Starts dark; survives reset since the core keeps the peripheral pointer across resets.
+    b->lux.source.sample = bridge_luminance_sample;
+    b->lux.source.readLuminance = bridge_luminance_read;
+    b->lux.value = 0;
+    if (platform == BRIDGE_PLATFORM_GBA) {
+        b->core->setPeripheral(b->core, mPERIPH_GBA_LUMINANCE, &b->lux.source);
+    }
     return b;
 }
 
@@ -181,6 +208,17 @@ int gba_bridge_read_audio(GBABridge* b, int16_t* out, int max_frames) {
 
 void gba_bridge_set_keys(GBABridge* b, uint16_t keys) {
     b->core->setKeys(b->core, keys);
+}
+
+bool gba_bridge_has_light_sensor(GBABridge* b) {
+    if (b->platform != BRIDGE_PLATFORM_GBA) return false;
+    struct GBA* gba = (struct GBA*) b->core->board;
+    if (!gba) return false;
+    return (gba->memory.hw.devices & HW_LIGHT_SENSOR) != 0;
+}
+
+void gba_bridge_set_luminance(GBABridge* b, uint8_t value) {
+    b->lux.value = value;
 }
 
 size_t gba_bridge_state_size(GBABridge* b) {
