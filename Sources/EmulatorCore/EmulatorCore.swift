@@ -23,6 +23,11 @@ public protocol EmulatorCore: AnyObject {
     /// Audio sample rate the core produces, in Hz (stereo, interleaved Int16).
     var audioSampleRate: Int { get }
 
+    /// The video refresh rate the loaded content actually runs at (frames/sec). Fixed per system for
+    /// the handhelds, but the PS1 differs by region — ~59.94 Hz NTSC vs ~50 Hz PAL — so "% of full
+    /// speed" must be measured against this, not a hardcoded 60. Defaults to the system's nominal rate.
+    var nominalRefreshRate: Double { get }
+
     /// Load a ROM. Replaces any currently loaded content.
     func loadROM(at url: URL) throws
 
@@ -44,8 +49,14 @@ public protocol EmulatorCore: AnyObject {
     /// Returns the number of sample-frames actually written.
     func readAudio(into buffer: UnsafeMutablePointer<Int16>, maxFrames: Int) -> Int
 
-    /// Set the currently-held buttons for the next `runFrame`.
+    /// Set the currently-held buttons for the next `runFrame`. GBA-shaped; kept for the GBA cores
+    /// and the headless runner. New code drives cores through `setInput` instead.
     func setButtons(_ buttons: GBAButtons)
+
+    /// Set the full system-agnostic controller state (buttons + analog sticks) for the next
+    /// `runFrame`. The default projects it onto `setButtons`, so GBA-only cores need do nothing;
+    /// cores with more inputs (PS1) override this to consume all of it.
+    func setInput(_ input: PadInput)
 
     /// Whether the loaded cartridge has a solar/light sensor (Boktai, Lunar Knights). Drives whether
     /// the UI offers a "light" control. Defaults to false for cores/games without one.
@@ -61,6 +72,11 @@ public protocol EmulatorCore: AnyObject {
     /// Restore machine state previously produced by `saveState()`.
     func loadState(_ data: Data) throws
 
+    /// Number of discs in the loaded content (multi-disc PS1 games). 0/1 = single-disc, no switching.
+    var discCount: Int { get }
+    /// Swap to disc `index` (eject → insert), for a game that asks you to change discs mid-play.
+    func setDisc(_ index: Int)
+
     /// Persistent cartridge save (battery/SRAM/flash), or nil if the game has none.
     var saveData: Data? { get }
 
@@ -72,6 +88,16 @@ public extension EmulatorCore {
     /// Most cores/games have no light sensor, so both members are optional to implement.
     var hasLightSensor: Bool { false }
     func setLuminance(_ value: UInt8) {}
+
+    /// Default: a core that only understands GBA keys sees the GBA projection of the full input.
+    func setInput(_ input: PadInput) { setButtons(input.gbaButtons) }
+
+    /// Default: the system's fixed nominal rate. Cores whose content varies by region (PS1) override.
+    var nominalRefreshRate: Double { Self.system.refreshRate }
+
+    /// Default: single-disc systems have no disc switching.
+    var discCount: Int { 0 }
+    func setDisc(_ index: Int) {}
 
     /// Convenience: pack a pixel the way `copyVideo` emits them — memory byte order R,G,B,A,
     /// matching libmgba's native 32-bit color_t and Metal's `.rgba8Unorm`.
