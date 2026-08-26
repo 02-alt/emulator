@@ -5,11 +5,13 @@ import Foundation
 public enum GameSystem: String, Codable, Sendable, CaseIterable {
     case gba
     case gbc
+    case ps1
 
     public var shortName: String {
         switch self {
         case .gba: return "GBA"
         case .gbc: return "GBC"
+        case .ps1: return "PS1"
         }
     }
 
@@ -17,25 +19,31 @@ public enum GameSystem: String, Codable, Sendable, CaseIterable {
         switch self {
         case .gba: return "Game Boy Advance"
         case .gbc: return "Game Boy Color"
+        case .ps1: return "PlayStation"
         }
     }
 
     /// Width÷height of the cartridge's cover label. The per-game cover cropper locks to this so what
     /// you crop is exactly what shows on the cartridge (the tile draws the cover aspect-fill into this
-    /// same shape): a **landscape** slot on a GBA cart, a near-**square** label on a Game Boy cart.
+    /// same shape): a **landscape** slot on a GBA cart, a near-**square** label on a Game Boy cart, a
+    /// **square** face on a PS1 disc (the art is printed round).
     public var coverAspect: Double {
         switch self {
         case .gba: return 1.88
         case .gbc: return 1.0
+        case .ps1: return 1.0   // printed on a round disc — a square crop fills the circle
         }
     }
 
     /// Native screen resolution (width, height). Used to lock the play window's aspect so the game
-    /// fills it edge-to-edge with no letterbox bars: GBA is 240×160 (3:2), Game Boy / Color 160×144 (10:9).
+    /// fills it edge-to-edge with no letterbox bars: GBA is 240×160 (3:2), Game Boy / Color 160×144
+    /// (10:9). The PS1 renders at a size that changes per frame, so this is its **display** shape
+    /// (4:3) rather than a fixed framebuffer size — the renderer scales each frame into 4:3.
     public var screenSize: (width: Int, height: Int) {
         switch self {
         case .gba: return (240, 160)
         case .gbc: return (160, 144)
+        case .ps1: return (4, 3)
         }
     }
 
@@ -46,10 +54,13 @@ public enum GameSystem: String, Codable, Sendable, CaseIterable {
 
     /// The file extensions that map to this system, lowercased. `.gb` (original Game Boy) rides along
     /// with the Game Boy Color — one mGBA core runs both, and they share the same cartridge shell.
+    /// PS1 games are disc images: `.cue`/`.bin` pairs, single-file `.chd` (preferred), `.pbp`, and
+    /// `.m3u` playlists for multi-disc games.
     public var fileExtensions: [String] {
         switch self {
         case .gba: return ["gba"]
         case .gbc: return ["gbc", "gb"]
+        case .ps1: return ["cue", "chd", "pbp", "m3u"]
         }
     }
 

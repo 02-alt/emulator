@@ -15,6 +15,7 @@ public final class CoverArtService: @unchecked Sendable {
         switch system {
         case .gba: return ["Nintendo_-_Game_Boy_Advance"]
         case .gbc: return ["Nintendo_-_Game_Boy_Color", "Nintendo_-_Game_Boy"]
+        case .ps1: return ["Sony_-_PlayStation"]
         }
     }
 
@@ -72,20 +73,55 @@ public final class CoverArtService: @unchecked Sendable {
 
     private func fetch(folder: String, dir: URL, stem: String, hash: String,
                        system: GameSystem, force: Bool) async -> URL? {
-        if !force, let cached = cached(in: dir, hash: hash) { return cached }
+        // Serve a cache hit only if it's a real image — an older build could have cached a symlink's
+        // text target (see below); ignore/replace such a file rather than hand back garbage.
+        if !force, let cached = cached(in: dir, hash: hash), Self.isImageFile(cached) { return cached }
         for repo in Self.repos(for: system) {
-            guard let url = remote(base: Self.base(repo: repo, folder: folder), stem: stem) else { continue }
-            do {
-                let (data, response) = try await session.data(from: url)
-                guard let http = response as? HTTPURLResponse, http.statusCode == 200, !data.isEmpty
-                else { continue }
-                let dest = dir.appendingPathComponent("\(hash).png")
-                try data.write(to: dest, options: .atomic)
-                return dest
-            } catch {
-                continue
-            }
+            let base = Self.base(repo: repo, folder: folder)
+            guard let data = await download(base: base, name: stem, hops: 3) else { continue }
+            let dest = dir.appendingPathComponent("\(hash).png")
+            do { try data.write(to: dest, options: .atomic); return dest } catch { continue }
         }
         return nil
+    }
+
+    /// Download one boxart, following libretro-thumbnails **symlinks**: regional duplicates are stored
+    /// as symlinks, and raw.githubusercontent serves the link's target *filename* as `text/plain`
+    /// rather than the image. When the body isn't a real image but names another `.png`, re-fetch that
+    /// target (bounded by `hops`).
+    private func download(base: String, name: String, hops: Int) async -> Data? {
+        guard let url = remote(base: base, stem: name) else { return nil }
+        guard let (data, response) = try? await session.data(from: url),
+              let http = response as? HTTPURLResponse, http.statusCode == 200, !data.isEmpty
+        else { return nil }
+        if Self.isImageData(data) { return data }
+        if hops > 0, let target = Self.symlinkTarget(data) {
+            return await download(base: base, name: target, hops: hops - 1)
+        }
+        return nil
+    }
+
+    /// PNG / JPEG magic bytes — a real image, not a symlink pointer or an error page.
+    private static func isImageData(_ data: Data) -> Bool {
+        let png: [UInt8] = [0x89, 0x50, 0x4E, 0x47]      // ‰PNG
+        let jpg: [UInt8] = [0xFF, 0xD8, 0xFF]            // JPEG SOI
+        let head = [UInt8](data.prefix(4))
+        return head.starts(with: png) || head.starts(with: jpg)
+    }
+
+    private static func isImageFile(_ url: URL) -> Bool {
+        guard let fh = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? fh.close() }
+        let head = (try? fh.read(upToCount: 4)) ?? Data()
+        return isImageData(head)
+    }
+
+    /// If `data` is a symlink target that raw.githubusercontent served as text — a single short line
+    /// naming a `.png` — return the target's stem (extension stripped, ready for `remote()`).
+    private static func symlinkTarget(_ data: Data) -> String? {
+        guard data.count < 512, let text = String(data: data, encoding: .utf8) else { return nil }
+        let line = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.contains("\n"), line.lowercased().hasSuffix(".png") else { return nil }
+        return (line as NSString).deletingPathExtension
     }
 }
