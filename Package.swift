@@ -11,6 +11,7 @@ let package = Package(
     products: [
         .library(name: "EmulatorCore", targets: ["EmulatorCore"]),
         .library(name: "GBACore", targets: ["GBACore"]),
+        .library(name: "PSXCore", targets: ["PSXCore"]),
         .library(name: "LibraryKit", targets: ["LibraryKit"]),
         .library(name: "ContinuityKit", targets: ["ContinuityKit"]),
         .executable(name: "emu-boot", targets: ["emu-boot"]),
@@ -54,6 +55,19 @@ let package = Package(
         // Real GBA core: EmulatorCore implemented on libmgba via MGBABridge.
         .target(name: "GBACore", dependencies: ["EmulatorCore", "MGBABridge"]),
 
+        // Generic libretro host: dlopen's any libretro core dylib and drives it through the six
+        // libretro callbacks. Only needs the vendored libretro.h at compile time; the core itself
+        // is loaded at runtime (no build-time link), so no core needs to exist to build this.
+        .target(
+            name: "LibretroBridge",
+            cSettings: [
+                .unsafeFlags(["-Ivendor/beetle-psx-libretro/libretro-common/include"]),
+            ]
+        ),
+
+        // Real PS1 core: EmulatorCore implemented on the Beetle PSX libretro core via LibretroBridge.
+        .target(name: "PSXCore", dependencies: ["EmulatorCore", "LibretroBridge"]),
+
         // Library model + persistence + ROM import + box-art fetching (no AppKit).
         .target(
             name: "LibraryKit",
@@ -68,14 +82,14 @@ let package = Package(
         // Headless "does it boot and run frames" runner (Milestone M1).
         .executableTarget(
             name: "emu-boot",
-            dependencies: ["EmulatorCore", "GBACore"]
+            dependencies: ["EmulatorCore", "GBACore", "PSXCore"]
         ),
 
         // Live Metal window + flat "Analogue OS" library + glass play UI. AppKit + MetalKit (macOS).
         .executableTarget(
             name: "emu-window",
             dependencies: [
-                "EmulatorCore", "GBACore", "LibraryKit", "ContinuityKit",
+                "EmulatorCore", "GBACore", "PSXCore", "LibraryKit", "ContinuityKit",
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             resources: [.process("Resources")],   // bundled Departure Mono pixel font (SIL OFL)

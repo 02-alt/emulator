@@ -1,3 +1,6 @@
 [submodule "vendor/mgba"]
 	path = vendor/mgba
 	url = https://github.com/mgba-emu/mgba.git
+[submodule "vendor/beetle-psx-libretro"]
+	path = vendor/beetle-psx-libretro
+	url = https://github.com/libretro/beetle-psx-libretro.git
