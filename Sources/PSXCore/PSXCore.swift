@@ -35,6 +35,10 @@ public final class PSXCore: EmulatorCore {
     /// `loadROM` via the core's `internal_resolution` option.
     public var internalScale: Int = 2
 
+    /// Whether this core is the Vulkan hardware renderer (loads the _hw dylib; enables GPU upscaling,
+    /// texture filtering, widescreen at low cost). Set at init.
+    public let hardware: Bool
+
     /// Render 3D anamorphically at 16:9 (the widescreen hack). 2D elements may stretch. Applied at
     /// `loadROM`; the host also widens the display aspect to match.
     public var widescreen: Bool = false
@@ -56,8 +60,9 @@ public final class PSXCore: EmulatorCore {
     ///   - corePath: the Beetle PSX libretro dylib. Defaults to the bundled/vendored core.
     ///   - systemDir: directory the core reads the PS1 BIOS from (scph5500/5501/5502.bin).
     ///   - saveDir: directory the core may write memory-card / save files into.
-    public init(corePath: URL? = nil, systemDir: URL, saveDir: URL) throws {
-        let core = corePath ?? Self.defaultCorePath()
+    public init(corePath: URL? = nil, systemDir: URL, saveDir: URL, hardware: Bool = false) throws {
+        self.hardware = hardware
+        let core = corePath ?? Self.defaultCorePath(hardware: hardware)
         guard FileManager.default.isReadableFile(atPath: core.path) else {
             throw EmulatorCoreError.invalidROM(reason: "PS1 core not found at \(core.path)")
         }
@@ -107,10 +112,14 @@ public final class PSXCore: EmulatorCore {
     private func applyEnhancements() {
         let scale = ["1x(native)", "2x", "4x", "8x", "16x"]
         let res = scale[min(max(internalScale - 1, 0), scale.count - 1)]
-        libretro_bridge_set_option(handle, "beetle_psx_pgxp_mode", "memory only")
-        libretro_bridge_set_option(handle, "beetle_psx_internal_resolution", res)
-        libretro_bridge_set_option(handle, "beetle_psx_dither_mode", "internal resolution")
-        libretro_bridge_set_option(handle, "beetle_psx_widescreen_hack", widescreen ? "enabled" : "disabled")
+        // The hardware core namespaces its options under beetle_psx_hw_.
+        let p = hardware ? "beetle_psx_hw_" : "beetle_psx_"
+        func opt(_ key: String, _ value: String) { libretro_bridge_set_option(handle, p + key, value) }
+        if hardware { opt("renderer", "hardware_vk") }
+        opt("pgxp_mode", "memory only")
+        opt("internal_resolution", res)
+        opt("dither_mode", "internal resolution")
+        opt("widescreen_hack", widescreen ? "enabled" : "disabled")
     }
 
     // MARK: - Multi-disc
@@ -220,15 +229,19 @@ public final class PSXCore: EmulatorCore {
 
     /// Where the bundled PS1 core lives. Overridable via `EMU_PSX_CORE` for headless/dev runs; else
     /// the app bundle's Resources; else the vendored dev build.
-    public static func defaultCorePath() -> URL {
-        if let env = ProcessInfo.processInfo.environment["EMU_PSX_CORE"] {
+    public static func defaultCorePath(hardware: Bool = false) -> URL {
+        let name = hardware ? "mednafen_psx_hw_libretro" : "mednafen_psx_libretro"
+        if !hardware, let env = ProcessInfo.processInfo.environment["EMU_PSX_CORE"] {
             return URL(fileURLWithPath: env)
         }
-        if let res = Bundle.main.url(forResource: "mednafen_psx_libretro", withExtension: "dylib") {
+        if hardware, let env = ProcessInfo.processInfo.environment["EMU_PSX_HW_CORE"] {
+            return URL(fileURLWithPath: env)
+        }
+        if let res = Bundle.main.url(forResource: name, withExtension: "dylib") {
             return res
         }
         // Dev fallback: the vendored build output, relative to the package root.
-        return URL(fileURLWithPath: "vendor/beetle-psx-libretro/mednafen_psx_libretro.dylib")
+        return URL(fileURLWithPath: "vendor/beetle-psx-libretro/\(name).dylib")
     }
 }
 

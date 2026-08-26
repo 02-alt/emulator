@@ -4,6 +4,7 @@
 #include "libretro_bridge.h"
 
 #include <libretro.h>
+#include "libretro_vk.h"
 
 #include <dlfcn.h>
 #include <stdlib.h>
@@ -92,6 +93,8 @@ struct LibretroCoreHandle {
     // Multi-disc: the core hands us this callback struct for a .m3u; we drive it to swap discs.
     struct retro_disk_control_callback disk;
     bool has_disk;
+
+    bool hw_frame;   // the last frame is a pending Vulkan HW image to read back on copyVideo
 };
 
 // The one live core (libretro callbacks have no user-data pointer to route through).
@@ -176,6 +179,12 @@ static bool cb_environment(unsigned cmd, void* data) {
         if (c && data) { c->disk = *(const struct retro_disk_control_callback*)data; c->has_disk = true; }
         return true;
 
+    case RETRO_ENVIRONMENT_SET_HW_RENDER:
+    case RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE:
+    case RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE:
+        // A Vulkan HW-render core: the Vulkan host handles these (device via MoltenVK, the interface).
+        return vk_host_environment(cmd, data);
+
     default:
         // Everything else (input descriptors, core-option variants, rumble, perf, controller
         // info, subsystems, …) is unsupported — the core copes with a false here.
@@ -185,7 +194,24 @@ static bool cb_environment(unsigned cmd, void* data) {
 
 static void cb_video_refresh(const void* data, unsigned width, unsigned height, size_t pitch) {
     struct LibretroCoreHandle* c = g_core;
-    if (!c || !data || width == 0 || height == 0) return;   // NULL == duped frame: keep last
+    if (!c) return;
+
+    // A hardware (Vulkan) frame: just record the size — the read-back (an expensive GPU->CPU copy) is
+    // deferred to copyVideo, so it happens once per *displayed* frame, not every emulated frame.
+    if (data == RETRO_HW_FRAME_BUFFER_VALID && width && height) {
+        size_t need = (size_t)width * height;
+        if (need > c->fb_cap) {
+            uint32_t* nb = (uint32_t*)realloc(c->fb, need * sizeof(uint32_t));
+            if (!nb) return;
+            c->fb = nb; c->fb_cap = need;
+        }
+        c->fb_w = width; c->fb_h = height; c->hw_frame = true;
+        static int _hwlog = 0;
+        if ((_hwlog++ % 120) == 0) fprintf(stderr, "vk_host: HW frame %ux%u\n", width, height);
+        return;
+    }
+
+    if (!data || width == 0 || height == 0) return;   // NULL == duped frame: keep last
 
     size_t need = (size_t)width * height;
     if (need > c->fb_cap) {
@@ -405,6 +431,12 @@ bool libretro_bridge_load_game(LibretroCoreHandle* c, const char* rom_path) {
     free(buf);
     if (!ok) return false;
 
+    // If the core asked for Vulkan HW rendering during load, bring up the context now (before the
+    // first frame). On failure the caller can still run; the core may fall back to software.
+    if (vk_host_active()) {
+        if (!vk_host_create_context()) fprintf(stderr, "vk_host: HW context creation failed\n");
+    }
+
     struct retro_system_av_info av;
     memset(&av, 0, sizeof(av));
     c->get_system_av_info(&av);
@@ -432,6 +464,11 @@ void libretro_bridge_dimensions(LibretroCoreHandle* c, uint32_t* width, uint32_t
 
 void libretro_bridge_video(LibretroCoreHandle* c, uint32_t* out) {
     if (!c || !out || !c->fb) return;
+    if (c->hw_frame) {
+        vk_host_set_frame_size(c->fb_w, c->fb_h);
+        uint32_t rw = 0, rh = 0;
+        if (vk_host_readback(c->fb, c->fb_w, c->fb_h, &rw, &rh)) { c->fb_w = rw; c->fb_h = rh; }
+    }
     memcpy(out, c->fb, (size_t)c->fb_w * c->fb_h * sizeof(uint32_t));
 }
 

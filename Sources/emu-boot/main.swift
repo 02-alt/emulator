@@ -18,6 +18,7 @@ struct Options {
     var outPath: String = "out/frame.ppm"
     var useRealCore = false
     var usePSX = false
+    var useHW = false
     var systemDir: String = "out/psx-system"   // holds the PS1 BIOS (scph*.bin)
     var saveDir: String = "out/psx-saves"
 }
@@ -32,6 +33,7 @@ func parseOptions() -> Options {
         case "--out":     if let v = it.next() { opts.outPath = v }
         case "--real":    opts.useRealCore = true
         case "--psx":     opts.usePSX = true
+        case "--hw":      opts.useHW = true
         case "--system":  if let v = it.next() { opts.systemDir = v }
         case "--savedir": if let v = it.next() { opts.saveDir = v }
         default:
@@ -61,7 +63,7 @@ let core: EmulatorCore
 if opts.usePSX {
     do {
         core = try PSXCore(systemDir: URL(fileURLWithPath: opts.systemDir),
-                           saveDir: URL(fileURLWithPath: opts.saveDir))
+                           saveDir: URL(fileURLWithPath: opts.saveDir), hardware: opts.useHW)
         print("Using real Beetle PSX core")
         print("BIOS dir: \(opts.systemDir)  (needs scph*.bin)")
     } catch {

@@ -61,7 +61,8 @@ let package = Package(
         .target(
             name: "LibretroBridge",
             cSettings: [
-                .unsafeFlags(["-Ivendor/beetle-psx-libretro/libretro-common/include"]),
+                .unsafeFlags(["-Ivendor/beetle-psx-libretro/libretro-common/include",
+                              "-Ivendor/beetle-psx-libretro/parallel-psx/khronos/include"]),
             ]
         ),
 
