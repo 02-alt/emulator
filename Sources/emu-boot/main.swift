@@ -1,6 +1,7 @@
 import EmulatorCore
 import Foundation
 import GBACore
+import PSXCore
 
 // Milestone M1 — headless "it boots and runs frames" runner.
 //
@@ -16,6 +17,9 @@ struct Options {
     var frames: Int = 60
     var outPath: String = "out/frame.ppm"
     var useRealCore = false
+    var usePSX = false
+    var systemDir: String = "out/psx-system"   // holds the PS1 BIOS (scph*.bin)
+    var saveDir: String = "out/psx-saves"
 }
 
 func parseOptions() -> Options {
@@ -23,10 +27,13 @@ func parseOptions() -> Options {
     var it = CommandLine.arguments.dropFirst().makeIterator()
     while let arg = it.next() {
         switch arg {
-        case "--rom":    opts.romPath = it.next()
-        case "--frames": if let v = it.next(), let n = Int(v) { opts.frames = n }
-        case "--out":    if let v = it.next() { opts.outPath = v }
-        case "--real":   opts.useRealCore = true
+        case "--rom":     opts.romPath = it.next()
+        case "--frames":  if let v = it.next(), let n = Int(v) { opts.frames = n }
+        case "--out":     if let v = it.next() { opts.outPath = v }
+        case "--real":    opts.useRealCore = true
+        case "--psx":     opts.usePSX = true
+        case "--system":  if let v = it.next() { opts.systemDir = v }
+        case "--savedir": if let v = it.next() { opts.saveDir = v }
         default:
             FileHandle.standardError.write(Data("Unknown argument: \(arg)\n".utf8))
         }
@@ -50,8 +57,21 @@ func writePPM(_ pixels: [UInt32], width: Int, height: Int, to path: String) thro
 
 let opts = parseOptions()
 
-let core: EmulatorCore = opts.useRealCore ? GBACore() : MockGBACore()
-print("Using \(opts.useRealCore ? "real libmgba core" : "mock core")")
+let core: EmulatorCore
+if opts.usePSX {
+    do {
+        core = try PSXCore(systemDir: URL(fileURLWithPath: opts.systemDir),
+                           saveDir: URL(fileURLWithPath: opts.saveDir))
+        print("Using real Beetle PSX core")
+        print("BIOS dir: \(opts.systemDir)  (needs scph*.bin)")
+    } catch {
+        FileHandle.standardError.write(Data("Failed to init PS1 core: \(error)\n".utf8))
+        exit(1)
+    }
+} else {
+    core = opts.useRealCore ? GBACore() : MockGBACore()
+    print("Using \(opts.useRealCore ? "real libmgba core" : "mock core")")
+}
 let (w, h) = core.videoSize
 print("Core: \(type(of: core).system.displayName)  \(w)x\(h)  @\(type(of: core).system.refreshRate) Hz")
 
@@ -92,5 +112,10 @@ print("Save state: \(state.count) bytes, round-trip OK")
 let fps = Double(opts.frames) / elapsed
 print(String(format: "Ran %d frames in %.3fs (%.0f fps headless)", opts.frames, elapsed, fps))
 
-try writePPM(videoBuffer, width: w, height: h, to: opts.outPath)
+// PS1 resolution is dynamic — the true final size is only known after running. `videoBuffer` was
+// sized to the core's maximum, and copyVideo packs the frame tightly, so read the real size now.
+let (fw, fh) = core.videoSize
+videoBuffer.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!) }
+if (fw, fh) != (w, h) { print("Final resolution: \(fw)x\(fh)") }
+try writePPM(videoBuffer, width: fw, height: fh, to: opts.outPath)
 print("Wrote final framebuffer -> \(opts.outPath)")
