@@ -384,12 +384,12 @@ final class LibraryDashboardView: NSView {
 
     /// Fetch RetroAchievements progress for a game (async); redraw when it lands, if still selected.
     private func fetchAchievements(for game: Game) {
-        guard game.system == .gba else { detailRA = .hidden; return }
+        guard game.system == .gba || game.system == .ps1 else { detailRA = .hidden; return }
         guard RACredentials.isConfigured else { detailRA = .notConfigured; return }
         detailRA = .loading
         let id = game.id
         Task { @MainActor [weak self] in
-            let result = await RetroAchievements.fetch(forROMAt: game.romURL)
+            let result = await RetroAchievements.fetch(forROMAt: game.romURL, system: game.system)
             guard let self, self.detailGameID == id else { return }
             switch result {
             case .ok(let progress): self.detailRA = .loaded(progress)
