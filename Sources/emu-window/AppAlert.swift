@@ -107,6 +107,11 @@ final class AppAlert: NSView {
         let messageField = NSTextField(wrappingLabelWithString: "")
         messageField.attributedStringValue = DS.Text.plain(message, size: 13, color: DS.Color.textSecondary)
         messageField.isSelectable = true
+        // A *selectable* label renders in its own `.font` (the system font), ignoring the attributed
+        // string's font — which silently drops the pixel typeface from the body. Pin the field font
+        // (and color) to keep Departure Mono whether it renders via the attributed run or the field.
+        messageField.font = DS.pixel(13)
+        messageField.textColor = DS.Color.textSecondary
         messageField.preferredMaxLayoutWidth = 340
         column.addArrangedSubview(messageField)
 
@@ -256,7 +261,8 @@ final class AppAlert: NSView {
 /// A pixel button styled for the themed alert: a filled white **primary** (the default action), an
 /// outlined **normal**, and a red **destructive**. Matches the app's other pixel controls.
 @MainActor
-private final class AlertButton: NSView {
+/// The themed pill button used in modal overlays (AppAlert, MemoryCardView).
+final class AlertButton: NSView {
     enum Kind { case primary, normal, destructive }
 
     private let onClick: () -> Void

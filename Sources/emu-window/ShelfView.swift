@@ -19,6 +19,8 @@ final class LibraryDashboardView: NSView {
     var onContextSend: ((Game, String?) -> Void)?
     /// Open the multi-select send picker with `Game` pre-selected — "Send Multiple…" in a cart's menu.
     var onContextSendMultiple: ((Game) -> Void)?
+    /// Show a PlayStation game's memory card — "Memory Card…" in a cart's menu.
+    var onContextMemoryCard: ((Game) -> Void)?
     var onDropURLs: (([URL]) -> Void)?
     /// The user's other devices, cached by the controller and read when a tile's right-click menu
     /// opens, so "Send to →" can list them without an async hop mid-menu.
@@ -283,6 +285,7 @@ final class LibraryDashboardView: NSView {
             t.onContextSettings = { [weak self] in self?.onGameSettings?(game) }
             t.onContextSendTo = { [weak self] target in self?.onContextSend?(game, target) }
             t.onContextSendMultiple = { [weak self] in self?.onContextSendMultiple?(game) }
+            t.onContextMemoryCard = { [weak self] in self?.onContextMemoryCard?(game) }
             t.sendTargets = { [weak self] in self?.sendTargets ?? [] }
             t.onCarouselDrag = { [weak self] phase, dx in self?.handleCarouselDrag(phase, dx) }
             addSubview(t)

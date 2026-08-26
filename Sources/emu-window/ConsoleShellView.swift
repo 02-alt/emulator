@@ -60,6 +60,13 @@ final class PlayVoidView: NSView, NSPopoverDelegate {
     /// Fired when the player taps the light toggle; the session flips the luminance and calls back
     /// ``setLightState(on:)`` to update the icon.
     var onToggleLight: (() -> Void)?
+    /// Disc-swap control for multi-disc PS1 games. Present only when there's more than one disc;
+    /// installed after build via ``installDiscControl(count:)``.
+    private var discBtn: PlayerIconButton?
+    private var discCount = 0
+    private var currentDisc = 0
+    /// Fired with the new disc index when the player swaps discs.
+    var onSwapDisc: ((Int) -> Void)?
     private let sep1 = PlayVoidView.makeSeparator()
     private let sep2 = PlayVoidView.makeSeparator()
 
@@ -262,6 +269,27 @@ final class PlayVoidView: NSView, NSPopoverDelegate {
         addSubview(btn)
         lightBtn = btn
         needsLayout = true
+    }
+
+    /// Add the disc-swap button for a multi-disc game (`count` ≥ 2). Tapping cycles to the next disc.
+    func installDiscControl(count: Int) {
+        guard discBtn == nil, count > 1 else { return }
+        discCount = count
+        let btn = barButton("opticaldisc", "Disc 1 of \(count) — tap to swap") { [weak self] in
+            self?.cycleDisc()
+        }
+        btn.onHoverChanged = { [weak self] button, entered in self?.showHint(entered ? button : nil) }
+        addSubview(btn)
+        discBtn = btn
+        needsLayout = true
+    }
+
+    private func cycleDisc() {
+        guard discCount > 1 else { return }
+        currentDisc = (currentDisc + 1) % discCount
+        onSwapDisc?(currentDisc)
+        discBtn?.toolTip = "Disc \(currentDisc + 1) of \(discCount) — tap to swap"
+        Toast.show(in: window, "Disc \(currentDisc + 1) of \(discCount)", style: .info)
     }
 
     /// Reflect the latched solar-sensor state on the toolbar button.
@@ -575,6 +603,7 @@ final class PlayVoidView: NSView, NSPopoverDelegate {
                                 toolbarGlass, sep1, sep2, saveBtn, loadBtn, speedBtn, shotBtn,
                                 padToggleBtn, pipBtn, ambienceBtn, settingsBtn]
         if let lightBtn { chrome.append(lightBtn) }
+        if let discBtn { chrome.append(discBtn) }
         chrome.forEach { $0.isHidden = hidden }
         if hidden { hint.isHidden = true }
     }
@@ -683,6 +712,7 @@ final class PlayVoidView: NSView, NSPopoverDelegate {
             .btn(shotBtn), .btn(padToggleBtn),
         ]
         if let lightBtn { tokens.append(.btn(lightBtn)) }
+        if let discBtn { tokens.append(.btn(discBtn)) }
         tokens.append(contentsOf: [.btn(ambienceBtn), .btn(settingsBtn)])
         func width(_ t: Tok) -> CGFloat {
             if case let .btn(b) = t { return b.intrinsicContentSize.width } else { return sepW }

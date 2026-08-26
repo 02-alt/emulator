@@ -28,6 +28,22 @@ rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp ".build/debug/$EXE" "$APP/Contents/MacOS/$EXE"
 [ -f icon/AppIcon.icns ] && cp icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp -R .build/debug/*.bundle "$APP/Contents/Resources/" 2>/dev/null || true
+
+# Sparkle auto-updater framework — the executable's @executable_path/../Frameworks rpath finds it here.
+# Without this the signed bundle dyld-crashes at launch ("Library not loaded: @rpath/Sparkle.framework").
+echo "▸ Embedding Sparkle.framework…"
+mkdir -p "$APP/Contents/Frameworks"
+cp -R ".build/debug/Sparkle.framework" "$APP/Contents/Frameworks/"
+
+# PS1 core (Beetle PSX libretro) — a runtime-loaded dylib the PS1 core dlopen's from Resources.
+# Optional: only bundled if it's been built (scripts/build-beetle-psx.sh). GPL — fine for a personal
+# dev build; revisit before any sale.
+PSX_CORE="vendor/beetle-psx-libretro/mednafen_psx_libretro.dylib"
+if [ -f "$PSX_CORE" ]; then
+    echo "▸ Bundling PS1 core (Beetle PSX)…"
+    cp "$PSX_CORE" "$APP/Contents/Resources/"
+fi
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -57,8 +73,24 @@ ENT="$(mktemp)"; cat > "$ENT" <<ENTITLE
 <key>com.apple.developer.icloud-container-identifiers</key><array><string>$CONTAINER</string></array>
 <key>com.apple.developer.icloud-services</key><array><string>CloudKit</string></array>
 <key>com.apple.developer.icloud-container-environment</key><string>Development</string>
+<key>com.apple.security.cs.allow-jit</key><true/>
+<key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+<key>com.apple.security.cs.disable-library-validation</key><true/>
 </dict></plist>
 ENTITLE
+# Sign Sparkle bottom-up (every nested Mach-O first, then the framework) so the app's --strict verify
+# passes — mirrors release.sh, minus the Developer-ID timestamp (dev signing is offline).
+FW="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+codesign -f -o runtime --preserve-metadata=entitlements -s "$IDENTITY" "$FW/XPCServices/Downloader.xpc"
+codesign -f -o runtime -s "$IDENTITY" "$FW/XPCServices/Installer.xpc"
+codesign -f -o runtime -s "$IDENTITY" "$FW/Autoupdate"
+codesign -f -o runtime -s "$IDENTITY" "$FW/Updater.app"
+codesign -f -o runtime -s "$IDENTITY" "$APP/Contents/Frameworks/Sparkle.framework"
+
+# Sign the bundled PS1 core dylib (hardened runtime rejects an unsigned dlopen'd Mach-O).
+[ -f "$APP/Contents/Resources/mednafen_psx_libretro.dylib" ] && \
+    codesign -f -o runtime -s "$IDENTITY" "$APP/Contents/Resources/mednafen_psx_libretro.dylib"
+
 codesign --force --entitlements "$ENT" -s "$IDENTITY" "$APP"; rm -f "$ENT"
 codesign --verify --strict "$APP" && echo "  signature OK"
 

@@ -1,5 +1,7 @@
 import AppKit
+import EmulatorCore
 import LibraryKit
+import PSXCore
 
 // Milestone M6 — the app now opens to a wooden shelf **Library**; selecting a game opens a
 // **Play** window (the skeuomorphic console shell from M2–M5). Direct play is still available:
@@ -19,6 +21,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var soundItems: [NSMenuItem] = []          // one per scene, kept to update the checkmark
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let out = ProcessInfo.processInfo.environment["EMU_DEBUG_PSX_DISC"] {
+            renderSampleTile(system: "chd", to: out)
+            NSApp.terminate(nil); return
+        }
+        if let cue = ProcessInfo.processInfo.environment["EMU_DEBUG_PSX_BENCH"] {
+            benchPSX(rom: cue)
+            NSApp.terminate(nil); return
+        }
         applyDockIcon()
         AppUpdater.shared.startIfSupported()   // begin Sparkle background update checks (bundled builds)
         AmbientPlayer.shared.apply()   // resume any saved background ambience; then it self-drives
@@ -34,12 +44,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lib.show()
             library = lib
             installMenu(addGamesTarget: lib)
+            if ProcessInfo.processInfo.environment["EMU_DEBUG_PSX_CARD"] != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak lib] in
+                    lib?.debugShowMemoryCard()
+                }
+            }
+            if ProcessInfo.processInfo.environment["EMU_DEBUG_PSX_BIOS"] != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak lib] in
+                    lib?.setUpPlayStation()
+                }
+            }
             if ProcessInfo.processInfo.environment["EMU_DEBUG_TROPHY"] != nil {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                     let host = NSApp.windows.first { $0.contentView is LibraryDashboardView } ?? NSApp.keyWindow
                     TrophyPop.show(in: host, title: "Minish Cap Master", points: 25)
                 }
             }
+        }
+    }
+
+    /// Debug: headlessly boot a PS1 ROM and time N frames, so lightrec JIT throughput can be measured
+    /// inside THIS binary (i.e. under its code signature + entitlements). Compare vs `emu-boot` (which
+    /// is unsigned, so its JIT is never gated) to tell whether the signed app's hardened runtime is
+    /// blocking the JIT.
+    private func benchPSX(rom: String) {
+        do {
+            let core = try PSXCore(systemDir: AppPaths.psxSystemDir, saveDir: AppPaths.psxSavesDir)
+            let env = ProcessInfo.processInfo.environment
+            if let s = env["EMU_DEBUG_PSX_SCALE"], let n = Int(s) { core.internalScale = n }
+            core.widescreen = env["EMU_DEBUG_PSX_WIDE"] != nil
+            try core.loadROM(at: URL(fileURLWithPath: rom))
+            let frames = 2000
+            let buttons: GBAButtons = []
+            core.setButtons(buttons)
+            let start = Date()
+            for _ in 0..<frames { core.runFrame() }
+            let dt = Date().timeIntervalSince(start)
+            let (vw, vh) = core.videoSize
+            NSLog("PSX_BENCH: \(frames) frames in \(String(format: "%.3f", dt))s = \(Int(Double(frames) / dt)) fps  res=\(vw)x\(vh) scale=\(core.internalScale) wide=\(core.widescreen)  coreRefresh=\(String(format: "%.2f", core.nominalRefreshRate))Hz discs=\(core.discCount)")
+        } catch {
+            NSLog("PSX_BENCH failed: \(error)")
+        }
+    }
+
+    /// Debug: render a single selected media tile (by ROM extension) to a PNG on a black backdrop,
+    /// so a new cartridge/disc silhouette can be eyeballed without disturbing the real library.
+    private func renderSampleTile(system ext: String, to path: String) {
+        let game = Game(title: "Ridge Racer", romFilenameStem: "Ridge Racer",
+                        romPath: "/tmp/Ridge Racer.\(ext)", romHash: "0")
+        let tile = CartridgeTileView(game: game)
+        if let coverPath = ProcessInfo.processInfo.environment["EMU_DEBUG_PSX_DISC_COVER"],
+           let img = NSImage(contentsOfFile: coverPath) {
+            tile.setCover(img)
+        }
+        tile.frame = NSRect(x: 0, y: 0, width: 340, height: 420)
+        tile.setSelected(true, animated: false)
+        tile.layoutSubtreeIfNeeded()
+        guard let rep = tile.bitmapImageRepForCachingDisplay(in: tile.bounds) else { return }
+        tile.cacheDisplay(in: tile.bounds, to: rep)
+        let final = NSImage(size: tile.bounds.size)
+        final.lockFocus()
+        NSColor.black.setFill(); NSRect(origin: .zero, size: tile.bounds.size).fill()
+        rep.draw(in: NSRect(origin: .zero, size: tile.bounds.size))
+        final.unlockFocus()
+        if let tiff = final.tiffRepresentation, let bmp = NSBitmapImageRep(data: tiff),
+           let png = bmp.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: path))
         }
     }
 
@@ -100,6 +170,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let add = NSMenuItem(title: "Add Games…", action: #selector(LibraryWindowController.addGames), keyEquivalent: "o")
         add.target = addGamesTarget
         fileMenu.addItem(add)
+        fileMenu.addItem(.separator())
+        // One-time PlayStation BIOS setup. Discoverable here now; a `.biosRequired` at PS1 launch
+        // will present the same flow once PS1 launch is wired.
+        let psx = NSMenuItem(title: "Set Up PlayStation…",
+                             action: #selector(LibraryWindowController.setUpPlayStation), keyEquivalent: "")
+        psx.target = addGamesTarget
+        fileMenu.addItem(psx)
         fileItem.submenu = fileMenu
         mainMenu.addItem(fileItem)
 

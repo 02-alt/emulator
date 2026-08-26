@@ -3,6 +3,7 @@ import EmulatorCore
 import GBACore
 import LibraryKit
 import MetalKit
+import PSXCore
 import QuartzCore
 
 /// Per-game overrides a session applies over the global ``Settings`` at launch. Each `nil` means
@@ -39,6 +40,11 @@ final class PlaySession: NSObject {
     private var settingsOverlay: SettingsOverlayView?
     private var pip: PiPWindowController?
     private let overrides: GameOverrides
+    /// True for systems whose save states are large (PS1 ≈ 16 MB). Rewind and run-ahead both
+    /// snapshot state continuously (every few frames / every frame), which is fine for a tiny GBA
+    /// state but tanks the frame rate and burns gigabytes of memory at PS1 sizes — so they're forced
+    /// off for these cores regardless of the global setting.
+    private let heavyState: Bool
     private var didTeardown = false
     private var lightOn = false   // solar-sensor latched state (Boktai / Lunar Knights)
 
@@ -71,33 +77,28 @@ final class PlaySession: NSObject {
         self.displayTitle = title
         self.isRealROM = romURL != nil
         self.overrides = overrides
+        let romSystem = romURL.map { GameSystem.infer(fromPath: $0.path) }
         let core: EmulatorCore
         var store: SaveStore?
-        if let romURL {
-            // One mGBA wrapper drives both cores; pick the one that matches the ROM's system so a
-            // Game Boy / Color cart boots on the GB core and a GBA cart on the GBA core.
-            let gba: MGBACore = GameSystem.infer(fromPath: romURL.path) == .gbc ? GBCore() : GBACore()
-            var loaded = false
-            do { try gba.loadROM(at: romURL); loaded = true }
-            catch { NSLog("Failed to load ROM \(romURL.path): \(error)") }
-            if loaded {
+        if let romURL, let system = romSystem {
+            if let real = PlaySession.loadCore(romURL: romURL, system: system) {
                 let s = SaveStore(romURL: romURL)
                 if let battery = s.read(s.batteryURL) {
-                    gba.loadSaveData(battery)
+                    real.loadSaveData(battery)
                     NSLog("Loaded battery save (\(battery.count) bytes)")
                 }
                 if let resumeState {
                     // Explicit cross-device resume ("Continue from iPhone"): the user asked for this
                     // exact session, so honor it over any local suspend state and regardless of the
                     // Auto-Resume setting. The core-version gate was already applied when fetching it.
-                    do { try gba.loadState(resumeState); NSLog("Resumed from cross-device Continuity state") }
+                    do { try real.loadState(resumeState); NSLog("Resumed from cross-device Continuity state") }
                     catch { NSLog("Cross-device state incompatible — starting fresh") }
                 } else if Settings.shared.autoResume, let suspend = s.read(s.suspendURL) {
-                    do { try gba.loadState(suspend); NSLog("Auto-resumed from suspend state") }
+                    do { try real.loadState(suspend); NSLog("Auto-resumed from suspend state") }
                     catch { NSLog("Suspend state incompatible — starting fresh") }
                 }
                 store = s
-                core = gba
+                core = real
             } else {
                 // A corrupt/unreadable ROM must never crash the app. The library pre-validates with
                 // `canOpen(_:)` and shows an alert, so this is only a last resort (e.g. the file
@@ -114,8 +115,9 @@ final class PlaySession: NSObject {
         let audio = AudioOutput(ring: driver.ring, sampleRate: driver.sampleRate)
         do { try audio.start() } catch { NSLog("Audio failed to start: \(error)"); audioStartFailed = true }
         audio.setVolume(Settings.shared.volume)
-        driver.setRewindEnabled(Settings.shared.rewindEnabled)
-        driver.setRunAhead(Settings.shared.runAhead ? 1 : 0)
+        self.heavyState = (romSystem == .ps1)
+        driver.setRewindEnabled(!heavyState && Settings.shared.rewindEnabled)
+        driver.setRunAhead(heavyState ? 0 : (Settings.shared.runAhead ? 1 : 0))
         driver.setSwapAB(overrides.swapAB ?? Settings.shared.swapAB)
         self.audio = audio
         self.controllers = GameControllerManager(driver: driver)
@@ -127,6 +129,14 @@ final class PlaySession: NSObject {
         view.isPaused = false
         view.enableSetNeedsDisplay = false
         self.renderer = Renderer(driver: driver, view: view)
+        // The PS1 renders at pixel sizes that all display as 4:3 (16:9 with the widescreen hack); pin
+        // that so the varying framebuffer width never changes the on-screen shape. Fixed-resolution
+        // systems keep their own ratio.
+        if romSystem == .ps1 {
+            renderer.displayAspect = Settings.shared.psxWidescreen ? 16.0 / 9.0 : 4.0 / 3.0
+        } else {
+            renderer.displayAspect = nil
+        }
         self.metalView = view
         view.delegate = renderer
 
@@ -170,6 +180,12 @@ final class PlaySession: NSObject {
             view.onToggleLight = { [weak self] in self?.toggleLight() }
         }
 
+        // Multi-disc PS1 games get a disc-swap button (eject → insert on the emulation thread).
+        if driver.discCount > 1 {
+            void.installDiscControl(count: driver.discCount)
+            void.onSwapDisc = { [weak self] index in self?.driver.setDisc(index) }
+        }
+
         // Controller "guide": the pad's Home button (or L3+R3) opens a paused, pad-navigable overlay.
         controllers.isGuideOpen = { [weak void] in void?.isGuideOpen ?? false }
         controllers.onGuideToggle = { [weak void] in void?.toggleGuide() }
@@ -192,8 +208,8 @@ final class PlaySession: NSObject {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.audio.setVolume(Settings.shared.volume)
-                self.driver.setRewindEnabled(Settings.shared.rewindEnabled)
-                self.driver.setRunAhead(Settings.shared.runAhead ? 1 : 0)
+                self.driver.setRewindEnabled(!self.heavyState && Settings.shared.rewindEnabled)
+                self.driver.setRunAhead(self.heavyState ? 0 : (Settings.shared.runAhead ? 1 : 0))
                 self.driver.setSwapAB(self.overrides.swapAB ?? Settings.shared.swapAB)
                 self.applyStatsSetting()
             }
@@ -250,7 +266,9 @@ final class PlaySession: NSObject {
         guard dt > 0 else { return }
         let fps = Double(frames - last.frames) / dt
         let drawRate = Double(drawn - last.drawn) / dt
-        let speed = Int((fps / 60.0 * 100).rounded())
+        // Measure against the content's true refresh (≈50 Hz for a PAL disc), not a fixed 60 — else a
+        // native-50 Hz game reads a misleading ~83%.
+        let speed = Int((fps / driver.refreshRate * 100).rounded())
         void.updateStats(fps: fps, speedPercent: speed, drawRate: drawRate)
     }
 
@@ -333,9 +351,8 @@ final class PlaySession: NSObject {
     // MARK: - Screenshot
 
     private func saveScreenshot() {
-        let w = driver.width, h = driver.height
-        var buffer = [UInt32](repeating: 0, count: w * h)
-        buffer.withUnsafeMutableBufferPointer { driver.copyLatestFrame(into: $0.baseAddress!) }
+        var buffer = [UInt32](repeating: 0, count: driver.width * driver.height)
+        let (w, h) = buffer.withUnsafeMutableBufferPointer { driver.copyLatestFrame(into: $0.baseAddress!) }
         guard let png = PlaySession.pngData(rgba: buffer, width: w, height: h) else { return }
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
         let safe = displayTitle.replacingOccurrences(of: "/", with: "-")
@@ -428,15 +445,39 @@ final class PlaySession: NSObject {
 
     /// The current frame encoded as PNG (used for slot thumbnails).
     private func currentFramePNG() -> Data? {
-        let w = driver.width, h = driver.height
-        var buffer = [UInt32](repeating: 0, count: w * h)
-        buffer.withUnsafeMutableBufferPointer { driver.copyLatestFrame(into: $0.baseAddress!) }
+        var buffer = [UInt32](repeating: 0, count: driver.width * driver.height)
+        let (w, h) = buffer.withUnsafeMutableBufferPointer { driver.copyLatestFrame(into: $0.baseAddress!) }
         return PlaySession.pngData(rgba: buffer, width: w, height: h)
+    }
+
+    /// Create and load the right core for a ROM's system. Returns nil on any load failure so the
+    /// caller can fall back to the mock core rather than crash.
+    fileprivate static func loadCore(romURL: URL, system: GameSystem) -> EmulatorCore? {
+        do {
+            switch system {
+            case .ps1:
+                let psx = try PSXCore(systemDir: AppPaths.psxSystemDir, saveDir: AppPaths.psxSavesDir)
+                psx.internalScale = Settings.shared.psxInternalScale
+                psx.widescreen = Settings.shared.psxWidescreen
+                try psx.loadROM(at: romURL)
+                return psx
+            case .gbc:
+                let gb = GBCore(); try gb.loadROM(at: romURL); return gb
+            case .gba:
+                let gba = GBACore(); try gba.loadROM(at: romURL); return gba
+            }
+        } catch {
+            NSLog("Failed to load ROM \(romURL.path): \(error)")
+            return nil
+        }
     }
 
     /// Whether the emulator core can actually load this ROM — lets a launch fail with a friendly alert
     /// instead of crashing (or silently falling back to the mock core) on a corrupt or truncated file.
     static func canOpen(_ romURL: URL) -> Bool {
+        // PS1 disc images are large; loading one just to validate is too costly (and BIOS presence is
+        // gated at launch). Trust it here — a genuine load failure still falls back safely.
+        if GameSystem.infer(fromPath: romURL.path) == .ps1 { return true }
         let probe: MGBACore = GameSystem.infer(fromPath: romURL.path) == .gbc ? GBCore() : GBACore()
         do { try probe.loadROM(at: romURL); return true } catch { return false }
     }

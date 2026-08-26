@@ -20,6 +20,8 @@ class CartridgeTileView: NSView {
     /// Open the multi-select send picker, pre-selecting this cartridge, so several games can be sent at
     /// once. nil target is decided inside the picker.
     var onContextSendMultiple: (() -> Void)?
+    /// Show this PlayStation game's memory card (right-click ▸ Memory Card…).
+    var onContextMemoryCard: (() -> Void)?
     /// The user's other devices, read lazily when the right-click menu opens (sync), so "Send to →"
     /// can list them. Empty → a plain broadcast "Send to My Devices".
     var sendTargets: () -> [String] = { [] }
@@ -208,34 +210,42 @@ class CartridgeTileView: NSView {
         add(game.hidden ? "Show Cartridge" : "Hide Cartridge",
             symbol: game.hidden ? "eye" : "eye.slash", #selector(contextToggleHidden))
         add("Game Settings…", symbol: "gearshape", #selector(contextSettings))
+        if game.system == .ps1 {
+            add("Memory Card…", symbol: "memorychip", #selector(contextMemoryCard))
+        }
         menu.addItem(.separator())
         add("Show ROM in Finder", symbol: "folder", #selector(contextReveal))
-        menu.addItem(.separator())
 
-        // Send: a plain broadcast item, or — once the user has other devices with sessions — a
-        // "Send to →" submenu that addresses one device (plus an "All My Devices" broadcast).
-        let targets = sendTargets()
-        if targets.isEmpty {
-            add("Send to My Devices", symbol: "iphone.and.arrow.forward", #selector(contextSendBroadcast))
-        } else {
-            let sendItem = item("Send to…", symbol: "iphone.and.arrow.forward", #selector(contextSendBroadcast))
-            sendItem.action = nil   // parent of a submenu isn't itself clickable
-            let submenu = NSMenu()
-            submenu.font = .menuFont(ofSize: pointSize)
-            for device in targets {
-                let deviceItem = NSMenuItem(title: device, action: #selector(contextSendToDevice(_:)), keyEquivalent: "")
-                deviceItem.target = self
-                deviceItem.image = icon("laptopcomputer.and.iphone")
-                deviceItem.representedObject = device
-                submenu.addItem(deviceItem)
+        // Send / transfer — omitted for PlayStation: disc images (hundreds of MB per disc) are far
+        // too large to hand off the way a small cartridge ROM is.
+        if game.system != .ps1 {
+            menu.addItem(.separator())
+            // Send: a plain broadcast item, or — once the user has other devices with sessions — a
+            // "Send to →" submenu that addresses one device (plus an "All My Devices" broadcast).
+            let targets = sendTargets()
+            if targets.isEmpty {
+                add("Send to My Devices", symbol: "iphone.and.arrow.forward", #selector(contextSendBroadcast))
+            } else {
+                let sendItem = item("Send to…", symbol: "iphone.and.arrow.forward", #selector(contextSendBroadcast))
+                sendItem.action = nil   // parent of a submenu isn't itself clickable
+                let submenu = NSMenu()
+                submenu.font = .menuFont(ofSize: pointSize)
+                for device in targets {
+                    let deviceItem = NSMenuItem(title: device, action: #selector(contextSendToDevice(_:)), keyEquivalent: "")
+                    deviceItem.target = self
+                    deviceItem.image = icon("laptopcomputer.and.iphone")
+                    deviceItem.representedObject = device
+                    submenu.addItem(deviceItem)
+                }
+                submenu.addItem(.separator())
+                submenu.addItem(item("All My Devices", symbol: "square.stack.3d.up", #selector(contextSendBroadcast)))
+                sendItem.submenu = submenu
+                menu.addItem(sendItem)
             }
-            submenu.addItem(.separator())
-            submenu.addItem(item("All My Devices", symbol: "square.stack.3d.up", #selector(contextSendBroadcast)))
-            sendItem.submenu = submenu
-            menu.addItem(sendItem)
+            // Pick several games to send in one go (opens a checklist, this cartridge pre-selected).
+            add("Send Multiple…", symbol: "square.on.square", #selector(contextSendMultiple))
         }
-        // Pick several games to send in one go (opens a checklist, this cartridge pre-selected).
-        add("Send Multiple…", symbol: "square.on.square", #selector(contextSendMultiple))
+
         menu.addItem(.separator())
         add("Remove from Library", symbol: "trash", #selector(contextRemove))
         return menu
@@ -249,6 +259,7 @@ class CartridgeTileView: NSView {
     @objc private func contextSendBroadcast() { onContextSendTo?(nil) }
     @objc private func contextSendToDevice(_ sender: NSMenuItem) { onContextSendTo?(sender.representedObject as? String) }
     @objc private func contextSendMultiple() { onContextSendMultiple?() }
+    @objc private func contextMemoryCard() { onContextMemoryCard?() }
 
     // MARK: - Hover
 
@@ -285,6 +296,7 @@ class CartridgeTileView: NSView {
         switch game.system {
         case .gba: drawGBACartridge(in: art)
         case .gbc: drawGBCCartridge(in: art)
+        case .ps1: drawPS1Disc(in: art)
         }
 
         if game.favorite { drawFavoriteBadge(in: tile) }
@@ -406,7 +418,7 @@ class CartridgeTileView: NSView {
     }
 
     /// Largest rect of the image's aspect ratio that covers `rect` (crops the overflow).
-    private static func aspectFill(_ size: NSSize, in rect: CGRect) -> CGRect {
+    static func aspectFill(_ size: NSSize, in rect: CGRect) -> CGRect {
         guard size.width > 0, size.height > 0 else { return rect }
         let scale = max(rect.width / size.width, rect.height / size.height)
         let w = size.width * scale, h = size.height * scale
@@ -496,6 +508,93 @@ class CartridgeTileView: NSView {
     /// large **square** label window for cover art, and a small ▽ insertion arrow at the foot. Same
     /// Liquid-Glass body + dark recesses as the GBA cart, so the two read as one family of carts.
     /// Drawn in flipped coords (y grows down).
+    /// PS1 game as a game **disc** — the CD equivalent of the GBA cartridge. The cover art is printed
+    /// on the disc face (clipped to the circle), with a clear clamping ring and a spindle hole at the
+    /// center. Drawn flat in the same Liquid-Glass style as the cartridges.
+    private func drawPS1Disc(in rect: CGRect) {
+        let d = min(rect.width, rect.height)
+        let c = CGPoint(x: rect.midX, y: rect.midY)
+        let disc = CGRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d)
+        let discPath = NSBezierPath(ovalIn: disc)
+
+        let hubR = d * 0.165
+        let hub = CGRect(x: c.x - hubR, y: c.y - hubR, width: hubR * 2, height: hubR * 2)
+
+        // Plastic body — reads as a disc even before any cover art has loaded.
+        fillGlass(discPath, in: disc)
+        if let cover {
+            // Printed label: the cover art wraps the disc face, clipped to the circle.
+            NSGraphicsContext.current?.saveGraphicsState()
+            discPath.addClip()
+            cover.draw(in: CartridgeTileView.aspectFill(cover.size, in: disc), from: .zero,
+                       operation: .sourceOver, fraction: isSelected ? 1 : 0.85, respectFlipped: true,
+                       hints: [.interpolation: NSImageInterpolation.high.rawValue])
+            NSGraphicsContext.current?.restoreGraphicsState()
+        } else {
+            drawBlankDisc(disc: disc, center: c, hubR: hubR)
+        }
+        NSGraphicsContext.current?.saveGraphicsState()
+        NSBezierPath(ovalIn: hub).addClip()
+        fillGlass(discPath, in: disc)
+        NSGraphicsContext.current?.restoreGraphicsState()
+
+        // Etched rings that catch the light: outer rim, the hub edge, and a faint stacking ring.
+        glassDetail.setStroke()
+        let rim = NSBezierPath(ovalIn: disc.insetBy(dx: d * 0.015, dy: d * 0.015))
+        rim.lineWidth = max(1, d * 0.006); rim.stroke()
+        let hubRing = NSBezierPath(ovalIn: hub)
+        hubRing.lineWidth = max(1, d * 0.006); hubRing.stroke()
+        let sr = d * 0.115
+        let stack = NSBezierPath(ovalIn: CGRect(x: c.x - sr, y: c.y - sr, width: sr * 2, height: sr * 2))
+        stack.lineWidth = 1
+        NSColor(white: 1, alpha: isSelected ? 0.12 : 0.08).setStroke(); stack.stroke()
+
+        // Center spindle hole — a dark punch-out with a lit rim.
+        let holeR = d * 0.05
+        let hole = CGRect(x: c.x - holeR, y: c.y - holeR, width: holeR * 2, height: holeR * 2)
+        groundColor.setFill(); NSBezierPath(ovalIn: hole).fill()
+        glassDetail.setStroke()
+        let hp = NSBezierPath(ovalIn: hole); hp.lineWidth = 1; hp.stroke()
+    }
+
+    /// The blank face of a disc with no cover yet: a dark disc grooved with faint concentric CD
+    /// tracks, the title monogram stamped in the upper band (clear of the hub so the spindle hole
+    /// never cuts it), and the system tag in the lower band. No rectangular label frame — that's a
+    /// cartridge idiom that reads wrong on a circle.
+    private func drawBlankDisc(disc: CGRect, center c: CGPoint, hubR: CGFloat) {
+        let d = disc.width
+
+        NSGraphicsContext.current?.saveGraphicsState()
+        NSBezierPath(ovalIn: disc).addClip()
+        groundColor.setFill()
+        NSBezierPath(ovalIn: disc).fill()
+
+        // A single subtle groove near the outer rim — just enough CD character, nothing crossing the
+        // monogram / tag in the inner label area.
+        let groove: CGFloat = isSelected ? 0.08 : 0.05
+        NSColor(white: 1, alpha: groove).setStroke()
+        let gr = d * 0.45
+        let ring = NSBezierPath(ovalIn: CGRect(x: c.x - gr, y: c.y - gr, width: gr * 2, height: gr * 2))
+        ring.lineWidth = 1
+        ring.stroke()
+        NSGraphicsContext.current?.restoreGraphicsState()
+
+        let faceAlpha: CGFloat = isSelected ? 0.34 : 0.22
+
+        // Monogram in the upper band, its baseline sitting just above the hub.
+        let mono = Self.initials(from: game.title)
+        let mfont = DS.pixel(d * 0.15)
+        let ms = NSAttributedString(string: mono, attributes: [.font: mfont]).size()
+        drawEmbossed(mono, font: mfont, faceAlpha: faceAlpha,
+                     at: CGPoint(x: c.x - ms.width / 2, y: c.y - hubR - d * 0.03 - ms.height))
+
+        // System tag in the lower band, mirrored below the hub.
+        let tag = DS.Text.label(game.system.shortName, size: max(8, d * 0.058),
+                                color: NSColor(white: 1, alpha: faceAlpha * 0.9), alignment: .center)
+        let ts = tag.size()
+        tag.draw(at: CGPoint(x: c.x - ts.width / 2, y: c.y + hubR + d * 0.04))
+    }
+
     private func drawGBCCartridge(in rect: CGRect) {
         // Portrait body: a hair taller than wide, centered in the square art region.
         let aspect: CGFloat = 0.90                    // width ÷ height

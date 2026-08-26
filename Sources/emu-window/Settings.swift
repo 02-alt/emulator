@@ -106,6 +106,8 @@ final class Settings {
         static let swapAB = "input.swapAB"
         static let joystickAsDpad = "input.joystickAsDpad"
         static let trophyNotifications = "achievements.notifications"
+        static let psxInternalScale = "ps1.internalScale"
+        static let psxWidescreen = "ps1.widescreen"
     }
 
     private init() {
@@ -124,7 +126,22 @@ final class Settings {
             Key.statsCorner: StatsCorner.topLeft.rawValue,
             Key.joystickAsDpad: true,
             Key.trophyNotifications: true,
+            Key.psxInternalScale: 2,   // PS1 defaults to a safe, sharp 2× internal resolution
         ])
+    }
+
+    /// PlayStation internal render scale (1 = native, 2 = 2×, 4 = 4×, 8 = 8×). Higher is sharper 3D
+    /// at a CPU cost. Applied when a PS1 game is next launched.
+    var psxInternalScale: Int {
+        get { let v = defaults.integer(forKey: Key.psxInternalScale); return v == 0 ? 2 : v }
+        set { defaults.set(newValue, forKey: Key.psxInternalScale); changed() }
+    }
+
+    /// PlayStation widescreen hack: render 3D anamorphically at 16:9. Best for fully-3D games; 2D
+    /// elements stretch. Applied when a PS1 game is next launched.
+    var psxWidescreen: Bool {
+        get { defaults.bool(forKey: Key.psxWidescreen) }
+        set { defaults.set(newValue, forKey: Key.psxWidescreen); changed() }
     }
 
     var displayFilter: DisplayFilter {

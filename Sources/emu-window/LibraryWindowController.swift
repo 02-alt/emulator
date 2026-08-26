@@ -108,6 +108,10 @@ final class LibraryWindowController: NSObject {
     /// Open the shared app Settings window (Video · Audio · Emulation · Achievements · Storage).
     func showSettings() { onOpenSettings?() }
 
+    /// Run the one-time PlayStation BIOS onboarding (File ▸ Set Up PlayStation…). Also the flow a
+    /// `.biosRequired` at PS1 launch will present once PS1 launch is wired.
+    @objc func setUpPlayStation() { PSXBiosOnboarding.present(in: window) }
+
     // MARK: - UI
 
     private func setupUI() {
@@ -137,6 +141,7 @@ final class LibraryWindowController: NSObject {
         dashboard.onReveal = { [weak self] in self?.revealROM($0) }
         dashboard.onContextSend = { [weak self] game, target in self?.sendToDevices(game, target: target) }
         dashboard.onContextSendMultiple = { [weak self] game in self?.presentSendPicker(preselect: game) }
+        dashboard.onContextMemoryCard = { [weak self] game in self?.presentMemoryCard(for: game) }
         dashboard.onDropURLs = { [weak self] in self?.importURLs($0) }
         dashboard.onAddROMs = { [weak self] in self?.addGames() }
         dashboard.onConfigure = { [weak self] in self?.showSettings() }
@@ -372,15 +377,18 @@ final class LibraryWindowController: NSObject {
     }
 
     private func performSend(_ game: Game, target: String?) {
-        SendFlourish.play(in: window, carts: [CartridgeTileView.cartridgeImage(for: game)])
+        let dest = target ?? "your devices"
+        // The flourish's iCloud chip carries the success confirmation now; keep a toast only for the
+        // failure case so the two signals don't double up.
+        let flourish = SendFlourish.play(in: window,
+                                         carts: [CartridgeTileView.cartridgeImage(for: game)], dest: dest)
         Task { [weak self] in
             guard let self else { return }
             let ok = await continuity.offerROM(game: game, targetDevice: target)
-            let dest = target ?? "your devices"
-            Toast.show(in: window,
-                       ok ? "\(game.displayTitle) — sent to \(dest)"
-                          : "Couldn’t send — iCloud isn’t available right now.",
-                       style: ok ? .info : .error)
+            flourish?.resolve(success: ok)
+            if !ok {
+                Toast.show(in: window, "Couldn’t send — iCloud isn’t available right now.", style: .error)
+            }
         }
     }
 
@@ -388,8 +396,9 @@ final class LibraryWindowController: NSObject {
     /// checked. Confirming offers every chosen game to the user's other devices through the same
     /// private-iCloud transfer as the single-game "Send" — same ownership consent, one summary toast.
     private func presentSendPicker(preselect: Game) {
+        // PlayStation disc images are too large to transfer, so they're not offered in the picker.
         SendPicker.present(in: window,
-                           games: sortedGames,
+                           games: sortedGames.filter { $0.system != .ps1 },
                            preselect: preselect,
                            targets: dashboard.sendTargets) { [weak self] games, target in
             self?.sendToDevices(games, target: target)
@@ -423,16 +432,17 @@ final class LibraryWindowController: NSObject {
     }
 
     private func performSend(_ games: [Game], target: String?) {
-        SendFlourish.play(in: window, carts: games.prefix(3).map { CartridgeTileView.cartridgeImage(for: $0) })
+        let dest = target ?? "your devices"
+        // The flourish's chip shows Sending → Sent; the toast still carries the exact "N of M" count.
+        let flourish = SendFlourish.play(in: window,
+                                         carts: games.prefix(3).map { CartridgeTileView.cartridgeImage(for: $0) },
+                                         dest: dest)
         Task { [weak self] in
             guard let self else { return }
-            let dest = target ?? "your devices"
-            Toast.show(in: window,
-                       "Sending \(games.count) game\(games.count == 1 ? "" : "s") to \(dest)…",
-                       symbol: "iphone.and.arrow.forward", style: .info)
             var sent = 0
             for game in games where await continuity.offerROM(game: game, targetDevice: target) { sent += 1 }
             let ok = sent == games.count
+            flourish?.resolve(success: sent > 0)   // delivered if anything got through
             Toast.show(in: window,
                        ok ? "Sent \(sent) game\(sent == 1 ? "" : "s") to \(dest)"
                           : sent == 0 ? "Couldn’t send — iCloud isn’t available right now."
@@ -565,6 +575,10 @@ final class LibraryWindowController: NSObject {
     /// so a name clash means a *different* game — it gets a " (2)", " (3)"… suffix rather than
     /// overwriting. Returns the managed URL, or nil on failure (leaving the original path in place).
     private func copyIntoLibrary(_ src: URL) -> URL? {
+        // A PS1 .cue points at separate track files — copy those in too, isolated in a per-game
+        // subfolder so generic track names (track01.bin…) can't collide across games.
+        if src.pathExtension.lowercased() == "cue" { return copyCueIntoLibrary(src) }
+
         let dir = AppPaths.romsDir
         let ext = src.pathExtension
         let base = src.deletingPathExtension().lastPathComponent
@@ -576,6 +590,120 @@ final class LibraryWindowController: NSObject {
         }
         do { try FileManager.default.copyItem(at: src, to: dest); return dest }
         catch { NSLog("ROM copy failed: \(error)"); return nil }
+    }
+
+    /// Copy a .cue and every track file it references into a dedicated subfolder of the ROMs dir,
+    /// returning the copied .cue. The .cue references tracks by bare filename, so keeping their names
+    /// and co-locating them preserves the references.
+    private func copyCueIntoLibrary(_ cue: URL) -> URL? {
+        let base = cue.deletingPathExtension().lastPathComponent
+        var folder = AppPaths.romsDir.appendingPathComponent(base, isDirectory: true)
+        var n = 2
+        while FileManager.default.fileExists(atPath: folder.path) {
+            folder = AppPaths.romsDir.appendingPathComponent("\(base) (\(n))", isDirectory: true)
+            n += 1
+        }
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let text = (try? String(contentsOf: cue, encoding: .utf8)) ?? ""
+            let srcDir = cue.deletingLastPathComponent()
+            for name in Self.cueReferencedFiles(text) {
+                let from = srcDir.appendingPathComponent(name)
+                guard FileManager.default.fileExists(atPath: from.path) else {
+                    NSLog("cue references a missing track: \(name)"); continue
+                }
+                try FileManager.default.copyItem(at: from, to: folder.appendingPathComponent(name))
+            }
+            let destCue = folder.appendingPathComponent(cue.lastPathComponent)
+            try FileManager.default.copyItem(at: cue, to: destCue)
+            return destCue
+        } catch { NSLog("cue import failed: \(error)"); return nil }
+    }
+
+    // MARK: - Multi-disc
+
+    /// The base title of a disc image with its "(Disc N)" / "(CD N)" / "(Disk N)" tag stripped, or
+    /// nil if it carries no such tag. Two discs of one game share this base.
+    static func discBase(_ stem: String) -> String? {
+        let pattern = #"\s*[\(\[](?:Disc|Disk|CD)\s*\d+(?:\s*of\s*\d+)?[\)\]]"#
+        guard let r = stem.range(of: pattern, options: [.regularExpression, .caseInsensitive]) else {
+            return nil
+        }
+        var base = stem
+        base.removeSubrange(r)
+        return base.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The disc number from a "(Disc N)" tag (for ordering), or nil.
+    static func discNumber(_ stem: String) -> Int? {
+        guard let r = stem.range(of: #"(?:Disc|Disk|CD)\s*\d+"#,
+                                 options: [.regularExpression, .caseInsensitive]) else { return nil }
+        return Int(stem[r].filter(\.isNumber))
+    }
+
+    /// Show a PlayStation game's memory card (its saves rendered on a drawn PS1 card).
+    func presentMemoryCard(for game: Game) {
+        let base = memoryCardBase(for: game)
+        let card = PSXMemoryCard.read(PSXMemoryCard.url(saveDir: AppPaths.psxSavesDir, base: base))
+        let cover = game.coverURL.flatMap { NSImage(contentsOf: $0) }
+        MemoryCardView.present(in: window, gameTitle: game.displayTitle, cover: cover, card: card)
+    }
+
+    /// Debug: show a sample memory card (synthetic saves + the first PS1 cover) — `EMU_DEBUG_PSX_CARD`.
+    func debugShowMemoryCard() {
+        func icon(_ r: UInt8, _ g: UInt8, _ b: UInt8) -> [UInt32] {
+            (0..<256).map { i in
+                let x = i % 16, y = i / 16
+                let on = ((x ^ y) & 3) != 0
+                let (rr, gg, bb): (UInt8, UInt8, UInt8) = on ? (r, g, b) : (24, 24, 34)
+                return UInt32(rr) | (UInt32(gg) << 8) | (UInt32(bb) << 16) | (255 << 24)
+            }
+        }
+        let saves = [
+            PSXSave(title: "METAL GEAR SOLID", filename: "BASLUS-00776", blocks: 1, region: "America", icon: icon(210, 60, 60)),
+            PSXSave(title: "TACTICAL ESPIONAGE", filename: "BASLUS-00776", blocks: 2, region: "America", icon: icon(80, 160, 220)),
+        ]
+        let cover = store.games.first { $0.system == .ps1 }?.coverURL.flatMap { NSImage(contentsOf: $0) }
+        MemoryCardView.present(in: window, gameTitle: "Metal Gear Solid",
+                               cover: cover, card: PSXMemoryCard.Card(saves: saves))
+    }
+
+    /// The content base the core keyed the memory card on: the shared `.m3u` base for a multi-disc
+    /// set (one card for the whole game), otherwise the disc's own filename stem.
+    private func memoryCardBase(for game: Game) -> String {
+        if let base = Self.discBase(game.romFilenameStem),
+           store.games.filter({ $0.system == .ps1 && Self.discBase($0.romFilenameStem) == base }).count > 1 {
+            return base
+        }
+        return game.romFilenameStem
+    }
+
+    /// If `game` is one disc of a multi-disc PS1 set present in the library, write (and return) a
+    /// deterministic `.m3u` listing every disc in order — loading that boots the whole game with
+    /// in-game disc swapping. Returns nil for single-disc games (load the disc directly).
+    private func multiDiscM3U(for game: Game) -> URL? {
+        guard game.system == .ps1, let base = Self.discBase(game.romFilenameStem) else { return nil }
+        let discs = store.games
+            .filter { $0.system == .ps1 && Self.discBase($0.romFilenameStem) == base }
+            .sorted { (Self.discNumber($0.romFilenameStem) ?? 0) < (Self.discNumber($1.romFilenameStem) ?? 0) }
+        guard discs.count > 1 else { return nil }
+        let m3u = AppPaths.romsDir.appendingPathComponent("\(base).m3u")
+        let body = discs.map(\.romPath).joined(separator: "\n") + "\n"
+        try? body.write(to: m3u, atomically: true, encoding: .utf8)
+        return m3u
+    }
+
+    /// Track filenames referenced by a .cue sheet (the quoted names after each `FILE`).
+    static func cueReferencedFiles(_ text: String) -> [String] {
+        var files: [String] = []
+        for line in text.components(separatedBy: .newlines) {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard t.uppercased().hasPrefix("FILE "),
+                  let q1 = t.firstIndex(of: "\""),
+                  let q2 = t[t.index(after: q1)...].firstIndex(of: "\"") else { continue }
+            files.append(String(t[t.index(after: q1)..<q2]))
+        }
+        return files
     }
 
     private func fetchArt(for game: Game) {
@@ -717,21 +845,34 @@ final class LibraryWindowController: NSObject {
                  "“\(game.displayTitle)” couldn’t be loaded — the ROM file may be corrupted or incomplete. Try re-importing it from a known-good copy.")
             return
         }
+        // PlayStation games can't boot without the console BIOS. Instead of failing, run the friendly
+        // one-time setup, then continue into the launch once a BIOS is installed.
+        if game.system == .ps1, !PSXBios.isInstalled {
+            PSXBiosOnboarding.present(in: window, onReady: { [weak self] in
+                self?.launch(game, resumeState: resumeState)
+            })
+            return
+        }
         var updated = game
         updated.lastPlayedAt = Date()
         store.update(updated)
+
+        // Multi-disc PS1: boot the whole set through a generated .m3u so the game can swap discs.
+        let romOverride = multiDiscM3U(for: updated)
 
         // Hand the controller to the game for the whole launch (cinematic included) — the play
         // session's own manager takes over; the shelf stops listening until we return to it.
         menuInput.isActive = false
 
         // The launch cinematic (cart lifts off the shelf → seats with the "cha-chunk" → GBA startup
-        // clip) is written and lives in `LaunchCinematic`, but disabled for now — it still needs work.
-        // Flip `launchCinematicEnabled` to bring it back. For now, boot straight in with the sound cue.
-        guard launchCinematicEnabled, launchCinematic == nil,
+        // clip) is written and lives in `LaunchCinematic`. It's a Game Boy Advance boot animation, so
+        // it only fits the Nintendo handhelds — a PS1 disc must never play a GBA intro; those boot
+        // straight in. (Flip `launchCinematicEnabled` to disable it entirely.)
+        let cinematicFitsSystem = (updated.system == .gba || updated.system == .gbc)
+        guard launchCinematicEnabled, cinematicFitsSystem, launchCinematic == nil,
               let tileFrame = dashboard.tileFrame(for: updated) else {
             SoundFX.shared.playCartridgeInsert()   // the cinematic plays its own seat cue when enabled
-            presentPlay(updated, resumeState: resumeState)
+            presentPlay(updated, romURL: romOverride, resumeState: resumeState)
             return
         }
         dashboard.setLaunchTileHidden(true, for: updated)   // its copy is lifted by the cinematic
@@ -754,12 +895,13 @@ final class LibraryWindowController: NSObject {
     /// shelf via the footer LIBRARY button or Esc (``dismissPlay``). Returns the game screen's rect (in
     /// content-view coordinates) so the launch cinematic can morph the boot clip into it.
     @discardableResult
-    private func presentPlay(_ game: Game, resumeState: Data? = nil) -> CGRect {
+    private func presentPlay(_ game: Game, romURL: URL? = nil, resumeState: Data? = nil) -> CGRect {
         let overrides = GameOverrides(
             filter: game.overrideFilter.flatMap { Settings.DisplayFilter(rawValue: $0) },
             speed: game.overrideSpeed,
             swapAB: game.overrideSwapAB)
-        let session = PlaySession(romURL: game.romURL,
+        // `romURL` overrides the game's own file for multi-disc PS1 sets (a generated .m3u).
+        let session = PlaySession(romURL: romURL ?? game.romURL,
                                   title: "\(AppInfo.name) — \(game.displayTitle)",
                                   overrides: overrides,
                                   resumeState: resumeState)
@@ -781,13 +923,14 @@ final class LibraryWindowController: NSObject {
         window.makeFirstResponder(session.keyView)
 
         // The player fills the window (Fill mode). Lock the window to the game's native aspect (3:2 for
-        // GBA, 10:9 for Game Boy / Color) and default it to that shape so the game fills edge-to-edge
-        // with no letterbox bars — and stays bar-free on resize. The shelf's own size is restored on exit.
-        let aspect = game.system.screenAspect
+        // GBA, 10:9 for Game Boy / Color, 4:3 for PS1 — 16:9 when its widescreen hack is on) and
+        // default it to that shape so the game fills edge-to-edge with no letterbox bars — and stays
+        // bar-free on resize. The shelf's own size is restored on exit.
+        let aspect: Double = (game.system == .ps1 && Settings.shared.psxWidescreen)
+            ? 16.0 / 9.0 : game.system.screenAspect
         let w = savedContentSize?.width ?? 1040
         window.contentMinSize = NSSize(width: (320 * aspect).rounded(), height: 320)
-        window.contentAspectRatio = NSSize(width: game.system.screenSize.width,
-                                           height: game.system.screenSize.height)
+        window.contentAspectRatio = NSSize(width: (aspect * 100).rounded(), height: 100)
         window.setContentSize(NSSize(width: w, height: (w / aspect).rounded()))
 
         session.view.layoutSubtreeIfNeeded()   // lay the player out now so the screen rect is final

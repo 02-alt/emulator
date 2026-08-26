@@ -245,6 +245,19 @@ final class SettingsView: NSView {
             stack.addArrangedSubview(hint("A live sample rendered through the current settings. "
                 + "The sweeping sun shows the ghosting trail; the checker patch shows the LCD grid."))
 
+            stack.addArrangedSubview(header("PlayStation"))
+            let scales = [1, 2, 4, 8]
+            let res = PixelSegmented(titles: ["Native", "2×", "4×", "8×"],
+                                     selected: scales.firstIndex(of: Settings.shared.psxInternalScale) ?? 1)
+            res.onChange = { Settings.shared.psxInternalScale = scales[$0] }
+            stack.addArrangedSubview(row("Resolution", res))
+            let wide = onOff(Settings.shared.psxWidescreen) { Settings.shared.psxWidescreen = $0 }
+            stack.addArrangedSubview(row("Widescreen", wide))
+            stack.addArrangedSubview(hint("A higher internal resolution sharpens 3D models (2D art stays "
+                + "native) — 2× is a safe default; 4× and 8× look sharper but need a fast Mac to hold full "
+                + "speed. Widescreen renders 3D at 16:9, though 2D elements may stretch. Changes apply the "
+                + "next time you open a PlayStation game."))
+
         case .audio:
             // Two independent levels the player balances against each other: the game's own audio and
             // the looping background ambience. Each writes straight through to ``Settings`` (live).
