@@ -850,8 +850,9 @@ final class LibraryDashboardView: NSView {
                    options: [.usesLineFragmentOrigin])
         // "Session running" marker, right after the game's name, when a resume state exists.
         if sessionGames.contains(game.id) {
-            let titleW = min(title.size().width, maxTitleW)
-            drawSessionMarker(x: labelX + titleW + sc(12), centerY: titleY + scf(32) * 0.5)
+            let ts = title.size()
+            let titleW = min(ts.width, maxTitleW)
+            drawSessionMarker(x: labelX + titleW + sc(12), centerY: titleY + ts.height * 0.5)
         }
 
         // Metadata table: labels at labelX, values at contentX. "-" for what we don't know yet.
