@@ -93,6 +93,22 @@ codesign -f -o runtime --timestamp -s "$IDENTITY" "$FW/Autoupdate"
 codesign -f -o runtime --timestamp -s "$IDENTITY" "$FW/Updater.app"
 codesign -f -o runtime --timestamp -s "$IDENTITY" "$APP/Contents/Frameworks/Sparkle.framework"
 
+# PlayStation emulation: the Beetle PSX cores + MoltenVK are runtime-loaded (dlopen'd from Resources).
+# Ship the software core always; the hardware core + MoltenVK only when present (the Settings ▸ Video
+# "Hardware Renderer" toggle needs them). Sign each with our Developer ID + hardened runtime + timestamp
+# so notarization accepts them and hardened-runtime library validation allows the dlopen (same team).
+# NOTE: Beetle PSX / Mednafen is GPL-2.0-or-later — bundling it in a distributed build carries GPL
+# obligations (source available at the linked upstream; see the About tab attribution).
+echo "▸ Bundling PlayStation cores + MoltenVK…"
+for LIB in \
+    "vendor/beetle-psx-libretro/mednafen_psx_libretro.dylib" \
+    "vendor/beetle-psx-libretro/mednafen_psx_hw_libretro.dylib" \
+    "vendor/moltenvk/libMoltenVK.dylib"; do
+    [ -f "$LIB" ] || continue
+    cp "$LIB" "$APP/Contents/Resources/"
+    codesign -f -o runtime --timestamp -s "$IDENTITY" "$APP/Contents/Resources/$(basename "$LIB")"
+done
+
 # The SwiftPM resource bundles are *shallow* (data only, no Mach-O) — they get sealed as resources
 # when the app is signed, so we sign the app itself, not each bundle.
 if [ -n "$PROFILE" ] && [ -f "$PROFILE" ]; then
@@ -107,13 +123,25 @@ if [ -n "$PROFILE" ] && [ -f "$PROFILE" ]; then
 <key>com.apple.developer.icloud-container-identifiers</key><array><string>$CONTAINER</string></array>
 <key>com.apple.developer.icloud-services</key><array><string>CloudKit</string></array>
 <key>com.apple.developer.icloud-container-environment</key><string>Production</string>
+<key>com.apple.security.cs.allow-jit</key><true/>
+<key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
 </dict></plist>
 ENTITLE
     codesign --force --options runtime --timestamp --entitlements "$ENT" -s "$IDENTITY" "$APP"
     rm -f "$ENT"
 else
     echo "  (no PROFILE set → building WITHOUT iCloud; cross-device Send/Continue disabled)"
-    codesign --force --options runtime --timestamp -s "$IDENTITY" "$APP"
+    # Still need the JIT entitlements for the PlayStation (lightrec) recompiler under hardened runtime.
+    ENT="$(mktemp)"; cat > "$ENT" <<ENTITLE
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>com.apple.security.cs.allow-jit</key><true/>
+<key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+</dict></plist>
+ENTITLE
+    codesign --force --options runtime --timestamp --entitlements "$ENT" -s "$IDENTITY" "$APP"
+    rm -f "$ENT"
 fi
 codesign --verify --strict --verbose=2 "$APP"
 

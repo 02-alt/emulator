@@ -27,13 +27,13 @@ cp -R "$APP" "$STAGE/$APP_NAME.app"
 ln -s /Applications "$STAGE/Applications"
 
 cat > "$STAGE/README.txt" <<'README'
-ENCORE — your Game Boy Advance classics, played again
-=====================================================
+ENCORE — your Game Boy Advance & PlayStation classics, played again
+===================================================================
 
-A clean, native macOS emulator built around a cartridge shelf: drop in your
-own GBA ROMs, browse them on the shelf, and play. Save states, battery saves,
-auto-resume, game-controller support, and RetroAchievements -- all in one
-small app.
+A clean, native macOS emulator built around a shelf of cartridges and discs:
+drop in your own Game Boy Advance ROMs or PlayStation discs, browse them on
+the shelf, and play. Save states, battery saves and memory cards, auto-resume,
+game-controller support, and RetroAchievements -- all in one small app.
 
 INSTALL
 -------
@@ -46,7 +46,12 @@ Encore is signed and notarized by Apple, so it just opens -- double-click it.
 
 USING IT
 --------
-• Add games: drag .gba ROM files onto the shelf, or click + (or press Cmd-O).
+• Add games: drag .gba ROMs or PlayStation discs (.cue/.chd/.pbp) onto the
+  shelf, or click + (or press Cmd-O).
+• PlayStation: a one-time setup asks for your console's BIOS the first time
+  (File -> Set Up PlayStation…). Play with a controller; each game keeps its
+  own memory card. An optional hardware renderer (Settings -> Video) upscales
+  the 3D on Apple Silicon.
 • Browse the shelf: <- / -> (or a controller's D-pad) move; Return / A plays.
 • In game: Arrows = D-pad, Z = A, X = B, A = L, S = R, Return = Start,
   Right Shift = Select.  F5 = quicksave, F9 = quickload.
@@ -59,7 +64,8 @@ USING IT
 REQUIREMENTS
 ------------
 • Apple Silicon Mac (arm64), macOS 15 or later.
-• Your own GBA ROM files -- Encore does not include any games.
+• Your own GBA ROMs / PlayStation discs -- Encore includes no games.
+• PlayStation also needs your own console BIOS (dumped from a PS1 you own).
 
 -----------------------------------------------------------------------
 
