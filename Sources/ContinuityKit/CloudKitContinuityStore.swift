@@ -33,6 +33,7 @@ public struct CloudKitContinuityStore: ContinuityStore {
     private enum RecordType {
         static let snapshot = "ContinuitySnapshot"
         static let rom = "ContinuityROM"   // separate, ephemeral ROM offer
+        static let save = "ContinuitySave"   // standalone save-only offer (e.g. a PS1 memory card)
     }
     private enum Field {
         static let romHash = "romHash"
@@ -48,6 +49,7 @@ public struct CloudKitContinuityStore: ContinuityStore {
         static let cover = "cover"           // ROM record: CKAsset — box art (small, optional)
         static let battery = "battery"           // ROM record: CKAsset — cartridge save (small, optional)
         static let targetDevice = "targetDevice"   // ROM record: addressee deviceName, or absent = broadcast
+        static let save = "save"                 // Save record: CKAsset — the memory-card save (small)
     }
 
     /// Keys sufficient to build a ``ContinuityCard`` — deliberately omits `state`.
@@ -349,6 +351,98 @@ public struct CloudKitContinuityStore: ContinuityStore {
             _ = try await database.deleteRecord(withID: romRecordID(romHash))
         } catch let error as CKError where error.code == .unknownItem {
             // Already gone — deleting is idempotent.
+        } catch {
+            throw mapAccountError(error)
+        }
+    }
+
+    // MARK: Save-only transfer
+
+    private func saveRecordID(_ romHash: String) -> CKRecord.ID {
+        CKRecord.ID(recordName: "save:\(romHash)")
+    }
+
+    public func publishSave(romHash: String, gameTitle: String, coverPNG: Data?, data: Data, targetDevice: String?) async throws {
+        let recordID = saveRecordID(romHash)
+        let record: CKRecord
+        do {
+            record = try await database.record(for: recordID)
+        } catch let error as CKError where error.code == .unknownItem {
+            record = CKRecord(recordType: RecordType.save, recordID: recordID)
+        } catch {
+            throw mapAccountError(error)
+        }
+        record[Field.romHash] = romHash as CKRecordValue
+        record[Field.fileName] = gameTitle as CKRecordValue   // reuse fileName as the display title
+        record[Field.deviceName] = deviceName as CKRecordValue
+        record[Field.timestamp] = Date() as CKRecordValue
+        record[Field.targetDevice] = targetDevice as CKRecordValue?   // nil = broadcast
+
+        let scratch = try makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let saveURL = scratch.appendingPathComponent("save.bin")
+        try data.write(to: saveURL)
+        record[Field.save] = CKAsset(fileURL: saveURL)
+
+        if let coverPNG {
+            let coverURL = scratch.appendingPathComponent("cover.png")
+            try coverPNG.write(to: coverURL)
+            record[Field.cover] = CKAsset(fileURL: coverURL)
+        } else {
+            record[Field.cover] = nil
+        }
+
+        do {
+            _ = try await database.save(record)
+        } catch {
+            throw mapAccountError(error)
+        }
+    }
+
+    public func fetchSave(romHash: String) async throws -> Data? {
+        let record: CKRecord
+        do {
+            record = try await database.record(for: saveRecordID(romHash))
+        } catch let error as CKError where error.code == .unknownItem {
+            return nil
+        } catch {
+            throw mapAccountError(error)
+        }
+        guard let asset = record[Field.save] as? CKAsset, let url = asset.fileURL else { return nil }
+        return try? Data(contentsOf: url)
+    }
+
+    public func allSaveOffers() async throws -> [SaveOffer] {
+        let query = CKQuery(recordType: RecordType.save, predicate: NSPredicate(value: true))
+        do {
+            let (matches, _) = try await database.records(
+                matching: query,
+                desiredKeys: [Field.romHash, Field.fileName, Field.deviceName,
+                              Field.timestamp, Field.targetDevice])   // metadata only — never the save asset
+            var offers: [SaveOffer] = []
+            for (recordID, result) in matches {
+                guard let record = try? result.get() else { continue }
+                let romHash = (record[Field.romHash] as? String)
+                    ?? String(recordID.recordName.drop(while: { $0 != ":" }).dropFirst())
+                offers.append(SaveOffer(
+                    romHash: romHash,
+                    gameTitle: (record[Field.fileName] as? String) ?? "",
+                    deviceName: (record[Field.deviceName] as? String) ?? "",
+                    timestamp: (record[Field.timestamp] as? Date) ?? record.modificationDate ?? .distantPast,
+                    targetDevice: record[Field.targetDevice] as? String))
+            }
+            return offers
+        } catch let error as CKError where error.code == .unknownItem {
+            return []
+        } catch {
+            throw mapAccountError(error)
+        }
+    }
+
+    public func clearSave(romHash: String) async throws {
+        do {
+            _ = try await database.deleteRecord(withID: saveRecordID(romHash))
+        } catch let error as CKError where error.code == .unknownItem {
         } catch {
             throw mapAccountError(error)
         }

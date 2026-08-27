@@ -95,6 +95,36 @@ public protocol ContinuityStore: Sendable {
     /// device discover games *shared* to it even when the sender never played them — a pure "share the
     /// ROM" send. Order unspecified; callers sort by `timestamp` and filter by `targetDevice`.
     func allROMOffers() async throws -> [ROMOffer]
+
+    // MARK: Save-only transfer (standalone — for games too big to send whole, e.g. PlayStation)
+    //
+    // When the ROM itself is too large to hand off (a PS1 disc), the player can still send just the
+    // tiny memory-card save. Unlike the battery channel above, this is a *standalone* record keyed by
+    // the game — the receiver must already own the game (its ROM) to apply it.
+
+    /// Publish a game's save (e.g. a PS1 `.mcr`) as a standalone offer, addressed to one device or
+    /// broadcast (`targetDevice: nil`). Idempotent per `romHash`.
+    func publishSave(romHash: String, gameTitle: String, coverPNG: Data?, data: Data, targetDevice: String?) async throws
+    /// Download the save bytes for a game, or nil if none is offered.
+    func fetchSave(romHash: String) async throws -> Data?
+    /// Every standalone save offer currently in the store. Callers keep the ones for games they own.
+    func allSaveOffers() async throws -> [SaveOffer]
+    /// Delete a save offer (after the receiver applies it, or the sender withdraws it).
+    func clearSave(romHash: String) async throws
+}
+
+/// A discoverable standalone save offer — a game's memory-card save waiting to be applied on a device
+/// that already owns the game. Enumerated by ``ContinuityStore/allSaveOffers()``.
+public struct SaveOffer: Sendable, Equatable {
+    public var romHash: String
+    public var gameTitle: String
+    public var deviceName: String
+    public var timestamp: Date
+    public var targetDevice: String?
+    public init(romHash: String, gameTitle: String, deviceName: String, timestamp: Date, targetDevice: String?) {
+        self.romHash = romHash; self.gameTitle = gameTitle; self.deviceName = deviceName
+        self.timestamp = timestamp; self.targetDevice = targetDevice
+    }
 }
 
 /// A discoverable ROM offer: enough to show "Transfer from <device>" and fetch the bytes, without a
@@ -138,4 +168,10 @@ public extension ContinuityStore {
     /// none and imports a blank cartridge exactly as before.
     func publishROMBattery(romHash: String, data: Data) async throws {}
     func fetchROMBattery(romHash: String) async throws -> Data? { nil }
+
+    /// Default: no save-only channel — stores that predate it offer none.
+    func publishSave(romHash: String, gameTitle: String, coverPNG: Data?, data: Data, targetDevice: String?) async throws {}
+    func fetchSave(romHash: String) async throws -> Data? { nil }
+    func allSaveOffers() async throws -> [SaveOffer] { [] }
+    func clearSave(romHash: String) async throws {}
 }

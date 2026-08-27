@@ -22,6 +22,8 @@ class CartridgeTileView: NSView {
     var onContextSendMultiple: (() -> Void)?
     /// Show this PlayStation game's memory card (right-click ▸ Memory Card…).
     var onContextMemoryCard: (() -> Void)?
+    /// Send just this PlayStation game's memory-card save to the user's other devices.
+    var onContextSendSave: (() -> Void)?
     /// End this game's in-progress session (right-click ▸ Close Session) — clears the resume state.
     var onContextCloseSession: (() -> Void)?
     /// Toggle whether this game's "Continue from another device" card is muted (right-click).
@@ -237,6 +239,7 @@ class CartridgeTileView: NSView {
         add("Game Settings…", symbol: "gearshape", #selector(contextSettings))
         if game.system == .ps1 {
             add("Memory Card…", symbol: "memorychip", #selector(contextMemoryCard))
+            add("Send Save to My Devices", symbol: "memorychip.fill", #selector(contextSendSave))
         }
         menu.addItem(.separator())
         add("Show ROM in Finder", symbol: "folder", #selector(contextReveal))
@@ -285,6 +288,7 @@ class CartridgeTileView: NSView {
     @objc private func contextSendToDevice(_ sender: NSMenuItem) { onContextSendTo?(sender.representedObject as? String) }
     @objc private func contextSendMultiple() { onContextSendMultiple?() }
     @objc private func contextMemoryCard() { onContextMemoryCard?() }
+    @objc private func contextSendSave() { onContextSendSave?() }
     @objc private func contextCloseSession() { onContextCloseSession?() }
     @objc private func contextToggleMuteCrossDevice() { onContextToggleMuteCrossDevice?() }
 

@@ -63,6 +63,19 @@ public actor InMemoryContinuityStore: ContinuityStore {
         romBatteries[romHash] = nil   // battery is torn down with the offer
     }
 
+    private var saveOffers: [String: (title: String, data: Data, deviceName: String, timestamp: Date, target: String?)] = [:]
+
+    public func publishSave(romHash: String, gameTitle: String, coverPNG: Data?, data: Data, targetDevice: String?) async throws {
+        saveOffers[romHash] = (gameTitle, data, "InMemory", Date(), targetDevice)
+    }
+    public func fetchSave(romHash: String) async throws -> Data? { saveOffers[romHash]?.data }
+    public func allSaveOffers() async throws -> [SaveOffer] {
+        saveOffers.map { hash, v in
+            SaveOffer(romHash: hash, gameTitle: v.title, deviceName: v.deviceName, timestamp: v.timestamp, targetDevice: v.target)
+        }
+    }
+    public func clearSave(romHash: String) async throws { saveOffers[romHash] = nil }
+
     /// Test affordance: how many games currently have a snapshot.
     public var count: Int { snapshots.count }
 

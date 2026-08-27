@@ -156,6 +156,45 @@ final class ContinuityService {
         }
     }
 
+    /// Offer just a game's save (e.g. a PS1 `.mcr`) — a standalone, tiny transfer for games whose ROM
+    /// is too large to send. The caller supplies the save bytes (it owns the on-disk path logic).
+    /// Returns whether the offer reached iCloud.
+    @discardableResult
+    func offerSave(game: Game, data: Data, targetDevice: String? = nil) async -> Bool {
+        guard let coordinator else { return false }
+        let coverPNG = CoverArtService().cachedCoverURL(hash: game.romHash).flatMap { try? Data(contentsOf: $0) }
+        do {
+            try await coordinator.publishSave(
+                romHash: game.romHash, gameTitle: game.displayTitle, coverPNG: coverPNG,
+                data: data, targetDevice: targetDevice)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// The newest save offer for a game this device *owns* (the mirror of ``newestTransferOffer`` — a
+    /// save arrives for a game you already have, to update its memory card). Nil when none. Our own
+    /// device's offers are already excluded by the coordinator.
+    func newestSaveOffer(owned games: [Game]) async -> (game: Game, offer: SaveOffer)? {
+        guard let coordinator else { return nil }
+        let byHash = Dictionary(games.map { ($0.romHash, $0) }, uniquingKeysWith: { a, _ in a })
+        let offers = (try? await coordinator.saveOffers()) ?? []
+        for offer in offers where byHash[offer.romHash] != nil {
+            return (byHash[offer.romHash]!, offer)
+        }
+        return nil
+    }
+
+    func downloadSave(romHash: String) async -> Data? {
+        guard let coordinator else { return nil }
+        return try? await coordinator.fetchSave(forRomHash: romHash)
+    }
+
+    func clearSave(romHash: String) async {
+        try? await coordinator?.clearSave(romHash: romHash)
+    }
+
     /// The user's other devices (by name) that can be a send target — those that have published a
     /// session. Empty until another device shows up, in which case "Send" is a plain broadcast.
     func otherDeviceNames() async -> [String] {

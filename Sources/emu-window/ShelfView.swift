@@ -21,6 +21,7 @@ final class LibraryDashboardView: NSView {
     var onContextSendMultiple: ((Game) -> Void)?
     /// Show a PlayStation game's memory card — "Memory Card…" in a cart's menu.
     var onContextMemoryCard: ((Game) -> Void)?
+    var onContextSendSave: ((Game) -> Void)?
     var onContextCloseSession: ((Game) -> Void)?
     /// Right-click ▸ Mute/Unmute a game's cross-device Continue card.
     var onContextToggleMuteCrossDevice: ((Game) -> Void)?
@@ -307,6 +308,7 @@ final class LibraryDashboardView: NSView {
             t.onContextSendTo = { [weak self] target in self?.onContextSend?(game, target) }
             t.onContextSendMultiple = { [weak self] in self?.onContextSendMultiple?(game) }
             t.onContextMemoryCard = { [weak self] in self?.onContextMemoryCard?(game) }
+            t.onContextSendSave = { [weak self] in self?.onContextSendSave?(game) }
             t.onContextCloseSession = { [weak self] in self?.onContextCloseSession?(game) }
             t.onContextToggleMuteCrossDevice = { [weak self] in self?.onContextToggleMuteCrossDevice?(game) }
             t.sendTargets = { [weak self] in self?.sendTargets ?? [] }

@@ -176,4 +176,22 @@ public actor ContinuityCoordinator {
     public func clearROM(romHash: String) async throws {
         try await store.clearROM(romHash: romHash)
     }
+
+    // MARK: Save-only transfer
+
+    public func publishSave(romHash: String, gameTitle: String, coverPNG: Data?, data: Data, targetDevice: String?) async throws {
+        try await store.publishSave(romHash: romHash, gameTitle: gameTitle, coverPNG: coverPNG, data: data, targetDevice: targetDevice)
+    }
+    public func fetchSave(forRomHash romHash: String) async throws -> Data? {
+        try await store.fetchSave(romHash: romHash)
+    }
+    /// Save offers addressed to this device (or broadcast), skipping our own. Newest first.
+    public func saveOffers() async throws -> [SaveOffer] {
+        try await store.allSaveOffers()
+            .filter { $0.deviceName != deviceName && ($0.targetDevice == nil || $0.targetDevice == deviceName) }
+            .sorted { $0.timestamp > $1.timestamp }
+    }
+    public func clearSave(romHash: String) async throws {
+        try await store.clearSave(romHash: romHash)
+    }
 }

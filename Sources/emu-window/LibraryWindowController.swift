@@ -142,6 +142,7 @@ final class LibraryWindowController: NSObject {
         dashboard.onContextSend = { [weak self] game, target in self?.sendToDevices(game, target: target) }
         dashboard.onContextSendMultiple = { [weak self] game in self?.presentSendPicker(preselect: game) }
         dashboard.onContextMemoryCard = { [weak self] game in self?.presentMemoryCard(for: game) }
+        dashboard.onContextSendSave = { [weak self] game in self?.sendSaveToDevices(game, target: nil) }
         dashboard.onContextCloseSession = { [weak self] game in self?.closeSession(for: game) }
         dashboard.onContextToggleMuteCrossDevice = { [weak self] game in self?.toggleMuteCrossDevice(game) }
         dashboard.onCrossDeviceMute = { [weak self] in self?.muteCurrentCrossDevice() }
@@ -173,7 +174,16 @@ final class LibraryWindowController: NSObject {
             MainActor.assumeIsolated {
                 guard let self, self.playSession == nil else { return }
                 self.refreshContinueCard()
+                self.checkForIncomingSave()
             }
+        }
+
+        // One-time cleanup: an earlier build published PS1 sessions for cross-device Continue, which
+        // then show up on devices that can't run PS1 (e.g. iOS "Continue MGS"). Clear any that this
+        // Mac owns so they stop being offered anywhere. Cheap — usually one or two PS1 games.
+        let ps1Hashes = store.games.filter { $0.system == .ps1 }.map(\.romHash)
+        if !ps1Hashes.isEmpty {
+            Task { for hash in ps1Hashes { await continuity.clear(romHash: hash) } }
         }
     }
 
@@ -459,6 +469,110 @@ final class LibraryWindowController: NSObject {
         }
     }
 
+    // MARK: - Send just the save (PlayStation memory card)
+
+    /// The on-disk memory-card (`.mcr`) for a PS1 game, keyed on the multi-disc base when applicable.
+    private func memoryCardURL(for game: Game) -> URL {
+        PSXMemoryCard.url(saveDir: AppPaths.psxSavesDir, base: memoryCardBase(for: game))
+    }
+
+    /// "Send Save" (right-click, PS1 only): a disc is far too big to hand off, but its tiny memory card
+    /// isn't — so this offers just the `.mcr` to the user's other devices, where a Mac that owns the
+    /// game is asked to apply it. Same ownership consent as a full send.
+    private func sendSaveToDevices(_ game: Game, target: String?) {
+        guard (try? Data(contentsOf: memoryCardURL(for: game)))?.isEmpty == false else {
+            Toast.show(in: window, "No memory card save yet for \(game.displayTitle).", style: .error)
+            return
+        }
+        guard ContinuityService.transferEnabled else {
+            let send = AppAlert.Action(title: "Send", isDefault: true) { [weak self] in
+                ContinuityService.transferEnabled = true
+                self?.performSendSave(game, target: target)
+            }
+            let cancel = AppAlert.Action(title: "Cancel", isCancel: true)
+            let shown = AppAlert.present(
+                in: window, symbol: "memorychip",
+                title: "Send this memory card?",
+                message: "This copies just the game's save to your other devices through your own private "
+                    + "iCloud — never our servers. A device that has the game can then apply it.",
+                actions: [cancel, send])
+            if !shown { ContinuityService.transferEnabled = true; performSendSave(game, target: target) }
+            return
+        }
+        performSendSave(game, target: target)
+    }
+
+    private func performSendSave(_ game: Game, target: String?) {
+        guard let data = try? Data(contentsOf: memoryCardURL(for: game)), !data.isEmpty else {
+            Toast.show(in: window, "No memory card save yet for \(game.displayTitle).", style: .error)
+            return
+        }
+        let dest = target ?? "your devices"
+        Task { [weak self] in
+            guard let self else { return }
+            let ok = await continuity.offerSave(game: game, data: data, targetDevice: target)
+            Toast.show(in: window,
+                       ok ? "Sent \(game.displayTitle)'s memory card to \(dest)."
+                          : "Couldn’t send — iCloud isn’t available right now.",
+                       symbol: ok ? "memorychip" : nil, style: ok ? .success : .error)
+        }
+    }
+
+    /// Cross-device save offers already handled this run (romHash|timestamp), so the 10s poll doesn't
+    /// re-prompt for one the user just applied or waved off. Not persisted — a fresh session re-offers.
+    private var handledSaveOffers = Set<String>()
+
+    /// Poll step: if another device sent a memory card for a game this Mac owns, ask to apply it.
+    /// Non-destructive — the current card is backed up first. Only prompts once per offer per run.
+    private func checkForIncomingSave() {
+        let games = store.games.filter { $0.system == .ps1 }
+        guard !games.isEmpty else { return }
+        Task { [weak self] in
+            guard let self, let hit = await continuity.newestSaveOffer(owned: games) else { return }
+            let key = "\(hit.offer.romHash)|\(hit.offer.timestamp.timeIntervalSince1970)"
+            guard !handledSaveOffers.contains(key) else { return }
+            handledSaveOffers.insert(key)
+            let apply = AppAlert.Action(title: "Apply", isDefault: true) { [weak self] in
+                self?.applyIncomingSave(hit.game, romHash: hit.offer.romHash)
+            }
+            let notNow = AppAlert.Action(title: "Not Now", isCancel: true)
+            let shown = AppAlert.present(
+                in: window, symbol: "memorychip",
+                title: "Memory card from \(hit.offer.deviceName)",
+                message: "A memory card for \(hit.game.displayTitle) arrived. Apply it? Your current card "
+                    + "is backed up first, so nothing is lost.",
+                actions: [notNow, apply])
+            if !shown { handledSaveOffers.remove(key) }   // couldn't prompt — try again next poll
+        }
+    }
+
+    private func applyIncomingSave(_ game: Game, romHash: String) {
+        Task { [weak self] in
+            guard let self else { return }
+            guard let data = await continuity.downloadSave(romHash: romHash), !data.isEmpty else {
+                Toast.show(in: window, "Couldn’t download the memory card.", style: .error)
+                return
+            }
+            let dest = memoryCardURL(for: game)
+            let fm = FileManager.default
+            try? fm.createDirectory(at: AppPaths.psxSavesDir, withIntermediateDirectories: true)
+            // Back up the current card (non-destructive) before overwriting.
+            if fm.fileExists(atPath: dest.path) {
+                let backup = dest.appendingPathExtension("bak")
+                try? fm.removeItem(at: backup)
+                try? fm.copyItem(at: dest, to: backup)
+            }
+            do {
+                try data.write(to: dest)
+                await continuity.clearSave(romHash: romHash)   // applied — retire the offer
+                Toast.show(in: window, "Applied \(game.displayTitle)'s memory card.",
+                           symbol: "memorychip", style: .success)
+            } catch {
+                Toast.show(in: window, "Couldn’t write the memory card.", style: .error)
+            }
+        }
+    }
+
     /// Open the multi-select send picker over the shelf, listing the whole library with `preselect`
     /// checked. Confirming offers every chosen game to the user's other devices through the same
     /// private-iCloud transfer as the single-game "Send" — same ownership consent, one summary toast.
@@ -525,6 +639,14 @@ final class LibraryWindowController: NSObject {
     private func publishContinuity(immediate: Bool) {
         guard let session = playSession, let game = playingGame,
               let snap = session.captureContinuitySnapshot() else { return }
+        // PlayStation is Mac-only (discs are too large to transfer, and iOS can't run PS1), so its
+        // sessions must never be published for cross-device Continue — otherwise other devices surface
+        // a bogus "Continue <PS1 game>". Clear any record an earlier build left behind, and stop. The
+        // *local* resume (SaveStore suspend state) is untouched; only cross-device handoff is skipped.
+        guard game.system != .ps1 else {
+            Task { await continuity.clear(romHash: game.romHash) }
+            return
+        }
         if immediate {
             Task {
                 await continuity.publish(game: game, state: snap.state,
