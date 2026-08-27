@@ -318,11 +318,12 @@ class CartridgeTileView: NSView {
         if sessionActive { drawSessionBadge(in: tile) }
     }
 
-    /// Marks a game with a live resume session ("session running"). A small dark chip in the top-left
-    /// with a white ▸ glyph — monochrome, so it reads as a status light, not a coloured accent.
+    /// Marks a game with a live resume session ("session running"). A small dark chip in the
+    /// bottom-right with a white ▸ glyph — monochrome, so it reads as a status light, not a coloured
+    /// accent, and out of the way of the favorite star (top-right) and the cover art's focal point.
     private func drawSessionBadge(in tile: CGRect) {
-        let d: CGFloat = 24
-        let badge = CGRect(x: tile.minX + 6, y: tile.minY + 6, width: d, height: d)  // flipped: top = minY
+        let d: CGFloat = 22
+        let badge = CGRect(x: tile.maxX - d - 6, y: tile.maxY - d - 6, width: d, height: d)  // flipped: bottom = maxY
         NSColor(white: 0, alpha: 0.5).setFill()
         NSBezierPath(ovalIn: badge).fill()
         let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .bold)

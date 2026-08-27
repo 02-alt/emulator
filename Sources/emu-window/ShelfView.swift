@@ -221,6 +221,7 @@ final class LibraryDashboardView: NSView {
             actionBar?.animator().alphaValue = target
             filterDrawer.animator().alphaValue = target
             if continueBannerVisible { continueBanner?.animator().alphaValue = target }
+            if localContinueVisible { localContinueBanner?.animator().alphaValue = target }
             if hidden {
                 for t in tiles where !t.isHidden {
                     // Start from what's actually on screen (side carts sit at ~0.4) so there's no flash.
@@ -350,6 +351,8 @@ final class LibraryDashboardView: NSView {
         } else {
             continueBannerVisible = false
             continueBanner?.isHidden = true
+            localContinueVisible = false
+            localContinueBanner?.isHidden = true
             return
         }
         let banner = continueBanner ?? {
@@ -370,11 +373,39 @@ final class LibraryDashboardView: NSView {
         banner.isHidden = false
         addSubview(banner)   // keep it front-most (tiles are re-added on each filter pass)
         continueBannerVisible = true
+
+        // Secondary row: when the primary is a cross-device Continue, also surface the local last-played
+        // game beside it (unless it's the same game), so neither hides the other.
+        if crossDeviceContinue != nil, let last = lastPlayedGame, last.id != game.id {
+            let local = localContinueBanner ?? {
+                let b = ContinueBanner()
+                localContinueBanner = b
+                return b
+            }()
+            localContinueGame = last
+            local.uiScale = contentScale
+            local.onDismiss = nil                                   // the local row isn't dismissible
+            local.onClick = { [weak self] in self?.onLaunch?(last) }
+            local.update(game: last, eyebrow: "CONTINUE", transfer: false)
+            local.isHidden = false
+            addSubview(local)
+            localContinueVisible = true
+        } else {
+            localContinueVisible = false
+            localContinueBanner?.isHidden = true
+        }
     }
     private var continueGame: Game?   // the game the Continue row currently points at
     private var continueEyebrow = "CONTINUE"   // its eyebrow, kept so rescales redraw the right label
     private var continueIsTransfer = false     // whether the current row is an incoming transfer
     private var continueAction: (() -> Void)?  // what a click on the row does (launch, or cross-device resume)
+
+    // A secondary "CONTINUE" row for the local last-played game, shown to the RIGHT of the primary row
+    // only when the primary is a cross-device Continue — so "Continue from iPhone" and your local
+    // "Continue" sit side by side instead of one masking the other.
+    private var localContinueBanner: ContinueBanner?
+    private var localContinueGame: Game?
+    private var localContinueVisible = false
 
     /// Set by the pull-up filter drawer (All Games / Hidden).
     func setScope(_ scope: Scope) {
@@ -601,6 +632,7 @@ final class LibraryDashboardView: NSView {
     private func setShelfContentHidden(_ hidden: Bool) {
         tiles.forEach { $0.isHidden = hidden }
         continueBanner?.isHidden = hidden || !continueBannerVisible
+        localContinueBanner?.isHidden = hidden || !localContinueVisible
         actionBar?.isHidden = hidden
         filterDrawer.isHidden = hidden
         needsDisplay = true   // drawDetail() bails out while the overlay is up
@@ -645,6 +677,16 @@ final class LibraryDashboardView: NSView {
         // (the big title below starts at labelX).
         banner.frame = CGRect(x: labelX - banner.leadingInset, y: continueBannerTop,
                               width: banner.measuredWidth, height: continueBannerH)
+        // Secondary local row sits to the right of the primary (with a gap), sharing the same baseline.
+        if let local = localContinueBanner, localContinueVisible {
+            if local.uiScale != contentScale, let g = localContinueGame {
+                local.uiScale = contentScale
+                local.update(game: g, eyebrow: "CONTINUE", transfer: false)
+            }
+            let gap = sc(28)
+            local.frame = CGRect(x: banner.frame.maxX + gap - local.leadingInset, y: continueBannerTop,
+                                 width: local.measuredWidth, height: continueBannerH)
+        }
     }
 
     /// Center the selected tile (coverflow-style): it sits in the middle, the next cart fans out to
