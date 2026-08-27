@@ -283,9 +283,13 @@ final class EmulationDriver: @unchecked Sendable {
                 core.setInput(input)
                 core.runFrame()
                 countFrame()
+                // Push this frame's audio to the ring BEFORE the video read-back. With a hardware
+                // (Vulkan) core at a high internal resolution, publishVideo's GPU→CPU read-back is
+                // heavy; draining audio first keeps the audio-master ring fed so it doesn't underrun
+                // (crackle) while the read-back completes. The run-ahead path above already does this.
+                drainAudio(discard: turbo)   // audio is muted while turbo / fast-forwarding
                 publishVideo()
                 captureRewindSnapshot()
-                drainAudio(discard: turbo)   // audio is muted while turbo / fast-forwarding
             }
 
             // A finite speed multiplier (1.5× / 2×) is clocked to 60·mult fps here.

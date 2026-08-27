@@ -322,7 +322,10 @@ bool vk_host_readback(uint32_t* out, uint32_t max_w, uint32_t max_h, uint32_t* w
     uint32_t ih = g_vk.last_h ? g_vk.last_h : max_h;
     if (iw == 0 || ih == 0) return false;
 
-    vkDeviceWaitIdle_(g_vk.device);
+    // No device wait-idle here: our copy is submitted to the same queue the core rendered on, so
+    // in-order execution already sequences it after the core's frame — and the core's own
+    // wait_sync_index ran at frame end. Skipping the full-device stall keeps the emulation thread
+    // moving (it matters at high internal resolution, where the stall starves the audio ring).
 
     // The core's scanout is not always RGBA8 — Beetle's HW renderer emits the native 15-bit PS1 output
     // as A1R5G5B5_PACK16 (2 bytes/px) during gameplay, and only RGBA8 (4 bytes/px) for the menu/boot.
