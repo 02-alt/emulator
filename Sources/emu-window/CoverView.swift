@@ -327,9 +327,25 @@ class CartridgeTileView: NSView {
         }
 
         if game.favorite { drawFavoriteBadge(in: tile) }
-        // The "session running" indicator lives next to the game's name in the detail panel (see
-        // ShelfView.drawDetailPanel), not on the tile — `sessionActive` here just gates the
-        // right-click "Close Session" item.
+        if sessionActive { drawSessionBadge(in: tile) }
+    }
+
+    /// "Session running" indicator: a small monochrome ▸ chip at the bottom-right of the cartridge/disc,
+    /// so it reads as a status light without covering the favorite star (top-right) or the art's focus.
+    private func drawSessionBadge(in tile: CGRect) {
+        let d: CGFloat = 22
+        let badge = CGRect(x: tile.maxX - d - 6, y: tile.maxY - d - 6, width: d, height: d)  // flipped: bottom = maxY
+        NSColor(white: 0, alpha: 0.5).setFill()
+        NSBezierPath(ovalIn: badge).fill()
+        let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .bold)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [.white]))
+        if let glyph = NSImage(systemSymbolName: "play.fill", accessibilityDescription: "Session in progress")?
+            .withSymbolConfiguration(cfg) {
+            let s = glyph.size
+            let box = CGRect(x: badge.midX - s.width / 2, y: badge.midY - s.height / 2, width: s.width, height: s.height)
+            glyph.draw(in: box, from: .zero, operation: .sourceOver, fraction: isSelected ? 1 : 0.85,
+                       respectFlipped: true, hints: nil)
+        }
     }
 
     /// A small gold star pinned to the cartridge's top-right, on a soft dark disc so it reads over any
