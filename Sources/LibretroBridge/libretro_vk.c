@@ -146,6 +146,9 @@ static void set_image(void* handle, const struct retro_vulkan_image* image,
     g_vk.last_format = image->create_info.format;
     g_vk.last_w      = 0;   // filled from the image extent isn't available here; tracked via av_info elsewhere
     g_vk.have_frame  = true;
+    if (getenv("EMU_DEBUG_VKFMT")) { static VkFormat _lf = (VkFormat)-1;
+        if (image->create_info.format != _lf) { _lf = image->create_info.format;
+            fprintf(stderr, "vk_host: set_image format=%d layout=%d\n", image->create_info.format, image->image_layout); } }
 }
 
 static uint32_t get_sync_index(void* h) { (void)h; return 0; }
@@ -321,7 +324,12 @@ bool vk_host_readback(uint32_t* out, uint32_t max_w, uint32_t max_h, uint32_t* w
 
     vkDeviceWaitIdle_(g_vk.device);
 
-    VkDeviceSize size = (VkDeviceSize)iw * ih * 4;
+    // The core's scanout is not always RGBA8 — Beetle's HW renderer emits the native 15-bit PS1 output
+    // as A1R5G5B5_PACK16 (2 bytes/px) during gameplay, and only RGBA8 (4 bytes/px) for the menu/boot.
+    // vkCmdCopyImageToBuffer copies in the image's own format, so the staging buffer and the unpack loop
+    // must match the real bytes-per-pixel or the frame comes out doubled (½ the stride) and mis-colored.
+    uint32_t bpp = (g_vk.last_format == VK_FORMAT_A1R5G5B5_UNORM_PACK16) ? 2 : 4;
+    VkDeviceSize size = (VkDeviceSize)iw * ih * bpp;
     VkBuffer buf; VkDeviceMemory mem;
     VkBufferCreateInfo bci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
                                .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -364,11 +372,25 @@ bool vk_host_readback(uint32_t* out, uint32_t max_w, uint32_t max_h, uint32_t* w
     vkMapMemory_(g_vk.device, mem, 0, size, 0, &mapped);
     uint32_t cw = iw < max_w ? iw : max_w, ch = ih < max_h ? ih : max_h;
     const uint8_t* src = (const uint8_t*)mapped;
-    for (uint32_t y = 0; y < ch; y++) {
-        for (uint32_t x = 0; x < cw; x++) {
-            const uint8_t* p = src + ((size_t)y * iw + x) * 4;
-            // MoltenVK image is typically BGRA or RGBA; assume RGBA (R,G,B,A). Swizzle if needed later.
-            out[y * cw + x] = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | (0xFFu << 24);
+    if (g_vk.last_format == VK_FORMAT_A1R5G5B5_UNORM_PACK16) {
+        // 16-bit packed: A in bit 15, R in 14..10, G in 9..5, B in 4..0. Expand each 5-bit channel to 8.
+        for (uint32_t y = 0; y < ch; y++) {
+            const uint16_t* row = (const uint16_t*)(src + (size_t)y * iw * 2);
+            for (uint32_t x = 0; x < cw; x++) {
+                uint16_t px = row[x];
+                uint32_t r = (px >> 10) & 0x1F, g = (px >> 5) & 0x1F, b = px & 0x1F;
+                uint32_t r8 = (r << 3) | (r >> 2), g8 = (g << 3) | (g >> 2), b8 = (b << 3) | (b >> 2);
+                out[y * cw + x] = r8 | (g8 << 8) | (b8 << 16) | (0xFFu << 24);
+            }
+        }
+    } else {
+        // RGBA8 (R,G,B,A). B8G8R8A8 would need a swizzle, but Beetle's RGBA8 scanout is R-first here.
+        for (uint32_t y = 0; y < ch; y++) {
+            const uint8_t* prow = src + (size_t)y * iw * 4;
+            for (uint32_t x = 0; x < cw; x++) {
+                const uint8_t* p = prow + (size_t)x * 4;
+                out[y * cw + x] = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | (0xFFu << 24);
+            }
         }
     }
     vkUnmapMemory_(g_vk.device, mem);
