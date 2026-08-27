@@ -24,6 +24,15 @@ class CartridgeTileView: NSView {
     var onContextMemoryCard: (() -> Void)?
     /// End this game's in-progress session (right-click ▸ Close Session) — clears the resume state.
     var onContextCloseSession: (() -> Void)?
+    /// Toggle whether this game's "Continue from another device" card is muted (right-click).
+    var onContextToggleMuteCrossDevice: (() -> Void)?
+
+    /// This game's cross-device Continue card is muted (persisted) — flips the tile menu wording.
+    private var mutedCrossDevice = false
+    func setMutedCrossDevice(_ muted: Bool) {
+        guard mutedCrossDevice != muted else { return }
+        mutedCrossDevice = muted
+    }
 
     /// This game has a live suspend/resume session (draws the "in progress" badge + enables Close
     /// Session). Set by the shelf from the on-disk resume state.
@@ -223,6 +232,8 @@ class CartridgeTileView: NSView {
             symbol: game.favorite ? "star.slash" : "star", #selector(contextToggleFavorite))
         add(game.hidden ? "Show Cartridge" : "Hide Cartridge",
             symbol: game.hidden ? "eye" : "eye.slash", #selector(contextToggleHidden))
+        add(mutedCrossDevice ? "Show Continue from Other Devices" : "Mute Continue from Other Devices",
+            symbol: mutedCrossDevice ? "bell" : "bell.slash", #selector(contextToggleMuteCrossDevice))
         add("Game Settings…", symbol: "gearshape", #selector(contextSettings))
         if game.system == .ps1 {
             add("Memory Card…", symbol: "memorychip", #selector(contextMemoryCard))
@@ -275,6 +286,7 @@ class CartridgeTileView: NSView {
     @objc private func contextSendMultiple() { onContextSendMultiple?() }
     @objc private func contextMemoryCard() { onContextMemoryCard?() }
     @objc private func contextCloseSession() { onContextCloseSession?() }
+    @objc private func contextToggleMuteCrossDevice() { onContextToggleMuteCrossDevice?() }
 
     // MARK: - Hover
 

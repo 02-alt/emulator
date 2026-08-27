@@ -143,6 +143,8 @@ final class LibraryWindowController: NSObject {
         dashboard.onContextSendMultiple = { [weak self] game in self?.presentSendPicker(preselect: game) }
         dashboard.onContextMemoryCard = { [weak self] game in self?.presentMemoryCard(for: game) }
         dashboard.onContextCloseSession = { [weak self] game in self?.closeSession(for: game) }
+        dashboard.onContextToggleMuteCrossDevice = { [weak self] game in self?.toggleMuteCrossDevice(game) }
+        dashboard.onCrossDeviceMute = { [weak self] in self?.muteCurrentCrossDevice() }
         dashboard.onDropURLs = { [weak self] in self?.importURLs($0) }
         dashboard.onAddROMs = { [weak self] in self?.addGames() }
         dashboard.onConfigure = { [weak self] in self?.showSettings() }
@@ -201,6 +203,7 @@ final class LibraryWindowController: NSObject {
         window.subtitle = n == 0 ? "" : "\(n) game\(n == 1 ? "" : "s")"   // native titlebar subtitle
         refreshContinueCard()
         refreshSessions()
+        refreshMutedGames()
     }
 
     /// Mark the tiles of games that have a live resume session (a saved "continue" state) so the shelf
@@ -239,8 +242,10 @@ final class LibraryWindowController: NSObject {
             // is the actionable, one-time event. The Continue card returns once the transfer is accepted
             // (it imports + clears the offer) or dismissed.
             if let offer = await continuity.newestTransferOffer(excluding: games),
+               !isMuted(romHash: offer.card.metadata.romHash),
                !isDismissed(romHash: offer.card.metadata.romHash, at: offer.card.metadata.timestamp) {
                 currentCrossDeviceKey = Self.crossKey(offer.card.metadata.romHash, offer.card.metadata.timestamp)
+                currentCrossDeviceHash = offer.card.metadata.romHash
                 dashboard.crossDeviceContinue = (
                     game: displayGame(for: offer),
                     eyebrow: "RECEIVE FROM \(offer.deviceName.uppercased())",
@@ -251,8 +256,10 @@ final class LibraryWindowController: NSObject {
             }
             // Otherwise a resumable session for a game we own, from another device → "Continue from …".
             if let hit = await continuity.newestResumable(in: games),
+               !isMuted(romHash: hit.card.metadata.romHash),
                !isDismissed(romHash: hit.card.metadata.romHash, at: hit.card.metadata.timestamp) {
                 currentCrossDeviceKey = Self.crossKey(hit.card.metadata.romHash, hit.card.metadata.timestamp)
+                currentCrossDeviceHash = hit.card.metadata.romHash
                 dashboard.crossDeviceContinue = (
                     game: hit.game,
                     eyebrow: "CONTINUE FROM \(hit.deviceName.uppercased())",
@@ -262,6 +269,7 @@ final class LibraryWindowController: NSObject {
                 return
             }
             currentCrossDeviceKey = nil
+            currentCrossDeviceHash = nil
             dashboard.crossDeviceContinue = nil
         }
     }
@@ -272,6 +280,45 @@ final class LibraryWindowController: NSObject {
     private var dismissedCrossDevice = Set<String>()
     /// Key of the card currently on the shelf, so "Dismiss" knows which one to hide.
     private var currentCrossDeviceKey: String?
+    /// romHash of the game currently on the cross-device row, so "Stop Showing This" knows what to mute.
+    private var currentCrossDeviceHash: String?
+
+    /// Games (by romHash) whose cross-device Continue/Transfer card the user has muted for good.
+    /// Persisted (unlike ``dismissedCrossDevice``) so a muted game stays quiet across relaunches and
+    /// newer sessions — that's the difference between "Dismiss" (this one) and "Stop Showing This".
+    private static let mutedKey = "continuity.mutedGames"
+    private lazy var mutedCrossDeviceHashes: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: Self.mutedKey) ?? [])
+    private func persistMuted() {
+        UserDefaults.standard.set(Array(mutedCrossDeviceHashes), forKey: Self.mutedKey)
+    }
+    private func isMuted(romHash: String) -> Bool { mutedCrossDeviceHashes.contains(romHash) }
+
+    /// Mute the game currently on the cross-device row (from the card's "Stop Showing This").
+    private func muteCurrentCrossDevice() {
+        guard let hash = currentCrossDeviceHash else { return }
+        mutedCrossDeviceHashes.insert(hash)
+        persistMuted()
+        refreshContinueCard()
+        refreshMutedGames()
+    }
+
+    /// Toggle a game's cross-device mute from its tile's right-click menu.
+    private func toggleMuteCrossDevice(_ game: Game) {
+        if mutedCrossDeviceHashes.contains(game.romHash) {
+            mutedCrossDeviceHashes.remove(game.romHash)
+        } else {
+            mutedCrossDeviceHashes.insert(game.romHash)
+        }
+        persistMuted()
+        refreshContinueCard()
+        refreshMutedGames()
+    }
+
+    /// Push the muted set to the shelf so tiles show Mute vs Unmute correctly.
+    private func refreshMutedGames() {
+        dashboard.setMutedGames(Set(store.games.filter { isMuted(romHash: $0.romHash) }.map { $0.id }))
+    }
 
     private static func crossKey(_ romHash: String, _ timestamp: Date) -> String {
         "\(romHash)|\(timestamp.timeIntervalSince1970)"

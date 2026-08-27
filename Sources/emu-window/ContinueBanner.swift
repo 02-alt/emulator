@@ -170,15 +170,28 @@ final class ContinueBanner: NSView {
     override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
     override func mouseDown(with event: NSEvent) { onClick?() }
 
-    /// Right-click → "Dismiss" hides the current card (only when the owner supplied ``onDismiss``).
+    /// Permanently stop showing this game's cross-device card (persisted), vs. the one-run Dismiss.
+    var onMute: (() -> Void)?
+
+    /// Right-click → "Dismiss" hides the current card (only when the owner supplied ``onDismiss``);
+    /// "Stop Showing This" mutes the game's cross-device card for good (when ``onMute`` is supplied).
     override func menu(for event: NSEvent) -> NSMenu? {
-        guard onDismiss != nil else { return nil }
+        guard onDismiss != nil || onMute != nil else { return nil }
         let menu = NSMenu()
-        let item = NSMenuItem(title: "Dismiss", action: #selector(dismissClicked), keyEquivalent: "")
-        item.target = self
-        item.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: nil)
-        menu.addItem(item)
+        if onDismiss != nil {
+            let item = NSMenuItem(title: "Dismiss", action: #selector(dismissClicked), keyEquivalent: "")
+            item.target = self
+            item.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: nil)
+            menu.addItem(item)
+        }
+        if onMute != nil {
+            let item = NSMenuItem(title: "Stop Showing This", action: #selector(muteClicked), keyEquivalent: "")
+            item.target = self
+            item.image = NSImage(systemSymbolName: "bell.slash", accessibilityDescription: nil)
+            menu.addItem(item)
+        }
         return menu
     }
     @objc private func dismissClicked() { onDismiss?() }
+    @objc private func muteClicked() { onMute?() }
 }

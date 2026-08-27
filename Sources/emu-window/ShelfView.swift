@@ -22,6 +22,10 @@ final class LibraryDashboardView: NSView {
     /// Show a PlayStation game's memory card — "Memory Card…" in a cart's menu.
     var onContextMemoryCard: ((Game) -> Void)?
     var onContextCloseSession: ((Game) -> Void)?
+    /// Right-click ▸ Mute/Unmute a game's cross-device Continue card.
+    var onContextToggleMuteCrossDevice: ((Game) -> Void)?
+    /// The cross-device card's "Stop Showing This" — mute the game currently on the Continue row.
+    var onCrossDeviceMute: (() -> Void)?
     var onDropURLs: (([URL]) -> Void)?
 
     /// Game ids that currently have a live resume session — drives the per-tile "in progress" badge.
@@ -31,6 +35,13 @@ final class LibraryDashboardView: NSView {
         sessionGames = ids
         for t in tiles { t.setSessionActive(ids.contains(t.game.id)) }
         needsDisplay = true   // the selected game's name-marker is drawn in drawDetailPanel
+    }
+
+    /// Game ids whose cross-device Continue card is muted — flips the tile menu's Mute/Unmute wording.
+    private var mutedGames: Set<UUID> = []
+    func setMutedGames(_ ids: Set<UUID>) {
+        mutedGames = ids
+        for t in tiles { t.setMutedCrossDevice(ids.contains(t.game.id)) }
     }
     /// The user's other devices, cached by the controller and read when a tile's right-click menu
     /// opens, so "Send to →" can list them without an async hop mid-menu.
@@ -298,9 +309,11 @@ final class LibraryDashboardView: NSView {
             t.onContextSendMultiple = { [weak self] in self?.onContextSendMultiple?(game) }
             t.onContextMemoryCard = { [weak self] in self?.onContextMemoryCard?(game) }
             t.onContextCloseSession = { [weak self] in self?.onContextCloseSession?(game) }
+            t.onContextToggleMuteCrossDevice = { [weak self] in self?.onContextToggleMuteCrossDevice?(game) }
             t.sendTargets = { [weak self] in self?.sendTargets ?? [] }
             t.onCarouselDrag = { [weak self] phase, dx in self?.handleCarouselDrag(phase, dx) }
             t.setSessionActive(sessionGames.contains(game.id))
+            t.setMutedCrossDevice(mutedGames.contains(game.id))
             addSubview(t)
             return t
         }
@@ -370,6 +383,7 @@ final class LibraryDashboardView: NSView {
         // Only a cross-device card (Continue/Transfer from another device) is dismissible; the local
         // last-played row isn't — there's nothing to hide, it just reflects your history.
         banner.onDismiss = (crossDeviceContinue != nil) ? { [weak self] in self?.onCrossDeviceDismiss?() } : nil
+        banner.onMute = (crossDeviceContinue != nil) ? { [weak self] in self?.onCrossDeviceMute?() } : nil
         banner.update(game: game, eyebrow: eyebrow, transfer: isTransfer)
         banner.isHidden = false
         addSubview(banner)   // keep it front-most (tiles are re-added on each filter pass)
