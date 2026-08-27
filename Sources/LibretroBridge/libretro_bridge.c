@@ -94,7 +94,9 @@ struct LibretroCoreHandle {
     struct retro_disk_control_callback disk;
     bool has_disk;
 
-    bool hw_frame;   // the last frame is a pending Vulkan HW image to read back on copyVideo
+    bool hw_frame;   // HW (Vulkan) mode: frames arrive as a GPU image to read back on copyVideo
+    bool hw_dirty;   // a new HW image has arrived since the last read-back (else copyVideo reuses fb)
+    bool hw_pending; // a Vulkan HW context is wanted but not yet created (deferred to the first run)
 };
 
 // The one live core (libretro callbacks have no user-data pointer to route through).
@@ -141,9 +143,12 @@ static bool cb_environment(unsigned cmd, void* data) {
         if (!v || !v->key) return false;
         if (c) {
             for (int i = 0; i < c->opt_n; i++) {
-                if (strcmp(c->opt_key[i], v->key) == 0) { v->value = c->opt_val[i]; return true; }
+                if (strcmp(c->opt_key[i], v->key) == 0) { v->value = c->opt_val[i];
+                    if (getenv("EMU_DEBUG_OPT")) fprintf(stderr, "GET_VARIABLE %s -> %s\n", v->key, v->value);
+                    return true; }
             }
         }
+        if (getenv("EMU_DEBUG_OPT") && strstr(v->key, "scanline")) fprintf(stderr, "GET_VARIABLE %s -> (NULL)\n", v->key);
         v->value = NULL;   // not overridden → core uses its own default
         return false;
     }
@@ -205,9 +210,10 @@ static void cb_video_refresh(const void* data, unsigned width, unsigned height, 
             if (!nb) return;
             c->fb = nb; c->fb_cap = need;
         }
-        c->fb_w = width; c->fb_h = height; c->hw_frame = true;
+        c->fb_w = width; c->fb_h = height; c->hw_frame = true; c->hw_dirty = true;
         static int _hwlog = 0;
-        if ((_hwlog++ % 120) == 0) fprintf(stderr, "vk_host: HW frame %ux%u\n", width, height);
+        int _mod = getenv("EMU_DEBUG_HWDIMS") ? 1 : 120;
+        if ((_hwlog++ % _mod) == 0) fprintf(stderr, "vk_host: HW frame %ux%u\n", width, height);
         return;
     }
 
@@ -431,11 +437,13 @@ bool libretro_bridge_load_game(LibretroCoreHandle* c, const char* rom_path) {
     free(buf);
     if (!ok) return false;
 
-    // If the core asked for Vulkan HW rendering during load, bring up the context now (before the
-    // first frame). On failure the caller can still run; the core may fall back to software.
-    if (vk_host_active()) {
-        if (!vk_host_create_context()) fprintf(stderr, "vk_host: HW context creation failed\n");
-    }
+    // If the core asked for Vulkan HW rendering during load, defer bringing up the context until just
+    // after the first run_frame. The RHI's internal-resolution scale defaults to 4× at startup and is
+    // only synced from our option on a *non-startup* check_variables (the first retro_run). Creating
+    // the renderer here (before that sync) would lock it to 4× and force a fragile mid-run rebuild;
+    // running one throwaway frame first lets the option latch, so the deferred create builds the
+    // renderer at the requested scale directly. See libretro_bridge_run_frame.
+    if (vk_host_active()) c->hw_pending = true;
 
     struct retro_system_av_info av;
     memset(&av, 0, sizeof(av));
@@ -454,6 +462,16 @@ void libretro_bridge_reset(LibretroCoreHandle* c) { if (c && c->reset) c->reset(
 void libretro_bridge_run_frame(LibretroCoreHandle* c) {
     if (!c) return;
     c->audio_len = 0;   // audio queued this frame is drained after run
+    if (c->hw_pending) {
+        // First run with no context: the core's non-startup check_variables latches the internal
+        // resolution into the RHI (renderer doesn't exist yet, so no rebuild is deferred), and its
+        // HW-render pipeline no-ops on the still-null device. Then create the context so renderer_init
+        // builds at the now-correct scale. This frame produces no image; the next one does.
+        c->hw_pending = false;
+        c->run();
+        if (!vk_host_create_context()) fprintf(stderr, "vk_host: HW context creation failed\n");
+        return;
+    }
     c->run();
 }
 
@@ -464,10 +482,14 @@ void libretro_bridge_dimensions(LibretroCoreHandle* c, uint32_t* width, uint32_t
 
 void libretro_bridge_video(LibretroCoreHandle* c, uint32_t* out) {
     if (!c || !out || !c->fb) return;
-    if (c->hw_frame) {
+    if (c->hw_frame && c->hw_dirty) {
+        // Only read back when the core delivered a new image since the last copy. Duped frames (NULL
+        // video_refresh) leave the image unchanged, so re-reading it would just repeat an expensive
+        // GPU→CPU wait-idle for the same pixels; keep the last-read fb instead.
         vk_host_set_frame_size(c->fb_w, c->fb_h);
         uint32_t rw = 0, rh = 0;
         if (vk_host_readback(c->fb, c->fb_w, c->fb_h, &rw, &rh)) { c->fb_w = rw; c->fb_h = rh; }
+        c->hw_dirty = false;
     }
     memcpy(out, c->fb, (size_t)c->fb_w * c->fb_h * sizeof(uint32_t));
 }

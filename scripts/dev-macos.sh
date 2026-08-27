@@ -44,6 +44,20 @@ if [ -f "$PSX_CORE" ]; then
     cp "$PSX_CORE" "$APP/Contents/Resources/"
 fi
 
+# PS1 hardware renderer: the Vulkan core + MoltenVK (Vulkan-on-Metal). Both optional — only bundled if
+# built/vendored. libretro_vk loads MoltenVK from @executable_path/../Resources; PSXCore(hardware:)
+# dlopen's the _hw core from Resources. Experimental path (Settings ▸ Video ▸ Hardware Renderer).
+PSX_CORE_HW="vendor/beetle-psx-libretro/mednafen_psx_hw_libretro.dylib"
+if [ -f "$PSX_CORE_HW" ]; then
+    echo "▸ Bundling PS1 hardware core (Beetle PSX Vulkan)…"
+    cp "$PSX_CORE_HW" "$APP/Contents/Resources/"
+fi
+MOLTENVK="vendor/moltenvk/libMoltenVK.dylib"
+if [ -f "$MOLTENVK" ]; then
+    echo "▸ Bundling MoltenVK…"
+    cp "$MOLTENVK" "$APP/Contents/Resources/"
+fi
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -87,9 +101,12 @@ codesign -f -o runtime -s "$IDENTITY" "$FW/Autoupdate"
 codesign -f -o runtime -s "$IDENTITY" "$FW/Updater.app"
 codesign -f -o runtime -s "$IDENTITY" "$APP/Contents/Frameworks/Sparkle.framework"
 
-# Sign the bundled PS1 core dylib (hardened runtime rejects an unsigned dlopen'd Mach-O).
-[ -f "$APP/Contents/Resources/mednafen_psx_libretro.dylib" ] && \
-    codesign -f -o runtime -s "$IDENTITY" "$APP/Contents/Resources/mednafen_psx_libretro.dylib"
+# Sign the bundled PS1 core dylibs + MoltenVK (hardened runtime rejects an unsigned dlopen'd Mach-O;
+# same-team signing also satisfies library validation).
+for LIB in mednafen_psx_libretro.dylib mednafen_psx_hw_libretro.dylib libMoltenVK.dylib; do
+    [ -f "$APP/Contents/Resources/$LIB" ] && \
+        codesign -f -o runtime -s "$IDENTITY" "$APP/Contents/Resources/$LIB"
+done
 
 codesign --force --entitlements "$ENT" -s "$IDENTITY" "$APP"; rm -f "$ENT"
 codesign --verify --strict "$APP" && echo "  signature OK"

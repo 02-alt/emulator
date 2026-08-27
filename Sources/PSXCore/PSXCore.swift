@@ -115,7 +115,18 @@ public final class PSXCore: EmulatorCore {
         // The hardware core namespaces its options under beetle_psx_hw_.
         let p = hardware ? "beetle_psx_hw_" : "beetle_psx_"
         func opt(_ key: String, _ value: String) { libretro_bridge_set_option(handle, p + key, value) }
-        if hardware { opt("renderer", "hardware_vk") }
+        if hardware {
+            opt("renderer", "hardware_vk")
+            // The Vulkan RHI keeps its own visible-scanline registers that default to 0 (the software
+            // core instead initialises these in code). They're only populated from the option system,
+            // and our bridge answers GET_VARIABLE with NULL for anything we don't override — so without
+            // these the reported frame height collapses to ~1px (display_height = last - initial + 1,
+            // e.g. 0-0+1 → 8px after 480i doubling ×4 upscale). Feed the core's own declared defaults.
+            opt("initial_scanline", "0")
+            opt("last_scanline", "239")
+            opt("initial_scanline_pal", "0")
+            opt("last_scanline_pal", "287")
+        }
         opt("pgxp_mode", "memory only")
         opt("internal_resolution", res)
         opt("dither_mode", "internal resolution")

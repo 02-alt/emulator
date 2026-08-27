@@ -95,6 +95,10 @@ let audioPerFrame = core.audioSampleRate / 60
 var audioBuffer = [Int16](repeating: 0, count: audioPerFrame * 2)
 
 // Press A on odd frames so input plumbing shows up in the output.
+// EMU_DUMP_BIGGEST: also snapshot the largest-area frame with real (non-black) content — useful for
+// dynamic-res cores where the final frame may be a black loading screen while a real frame flew by.
+let dumpBiggest = ProcessInfo.processInfo.environment["EMU_DUMP_BIGGEST"] != nil
+var biggest: (pixels: [UInt32], w: Int, h: Int)?
 let start = Date()
 for frame in 0..<opts.frames {
     core.setButtons(frame % 2 == 0 ? [] : [.a])
@@ -103,6 +107,19 @@ for frame in 0..<opts.frames {
     _ = audioBuffer.withUnsafeMutableBufferPointer {
         core.readAudio(into: $0.baseAddress!, maxFrames: audioPerFrame)
     }
+    if dumpBiggest {
+        let (cw, ch) = core.videoSize
+        let area = cw * ch
+        if area > (biggest.map { $0.w * $0.h } ?? 64 * 64) && area <= videoBuffer.count {
+            let hasContent = videoBuffer.prefix(area).contains { ($0 & 0x00FF_FFFF) != 0 }
+            if hasContent { biggest = (Array(videoBuffer.prefix(area)), cw, ch) }
+        }
+    }
+}
+if let b = biggest {
+    let bigPath = (opts.outPath as NSString).deletingPathExtension + "-biggest.ppm"
+    try writePPM(b.pixels, width: b.w, height: b.h, to: bigPath)
+    print("Wrote biggest real frame \(b.w)x\(b.h) -> \(bigPath)")
 }
 let elapsed = Date().timeIntervalSince(start)
 

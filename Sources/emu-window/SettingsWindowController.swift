@@ -253,9 +253,12 @@ final class SettingsView: NSView {
             stack.addArrangedSubview(row("Resolution", res))
             let wide = onOff(Settings.shared.psxWidescreen) { Settings.shared.psxWidescreen = $0 }
             stack.addArrangedSubview(row("Widescreen", wide))
+            let hw = onOff(Settings.shared.psxHardware) { Settings.shared.psxHardware = $0 }
+            stack.addArrangedSubview(row("Hardware Renderer", hw))
             stack.addArrangedSubview(hint("A higher internal resolution sharpens 3D models (2D art stays "
                 + "native) — 2× is a safe default; 4× and 8× look sharper but need a fast Mac to hold full "
-                + "speed. Widescreen renders 3D at 16:9, though 2D elements may stretch. Changes apply the "
+                + "speed. Widescreen renders 3D at 16:9, though 2D elements may stretch. The hardware "
+                + "renderer (Vulkan via MoltenVK) upscales on the GPU — experimental. Changes apply the "
                 + "next time you open a PlayStation game."))
 
         case .audio:

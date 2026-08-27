@@ -108,6 +108,7 @@ final class Settings {
         static let trophyNotifications = "achievements.notifications"
         static let psxInternalScale = "ps1.internalScale"
         static let psxWidescreen = "ps1.widescreen"
+        static let psxHardware = "ps1.hardware"
     }
 
     private init() {
@@ -142,6 +143,14 @@ final class Settings {
     var psxWidescreen: Bool {
         get { defaults.bool(forKey: Key.psxWidescreen) }
         set { defaults.set(newValue, forKey: Key.psxWidescreen); changed() }
+    }
+
+    /// PlayStation hardware (Vulkan/MoltenVK) renderer. Off = the mature software renderer. On = GPU
+    /// upscaling on Apple Silicon. Experimental; requires the bundled HW core + MoltenVK. Applied when
+    /// a PS1 game is next launched.
+    var psxHardware: Bool {
+        get { defaults.bool(forKey: Key.psxHardware) }
+        set { defaults.set(newValue, forKey: Key.psxHardware); changed() }
     }
 
     var displayFilter: DisplayFilter {
