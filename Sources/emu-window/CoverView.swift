@@ -22,6 +22,17 @@ class CartridgeTileView: NSView {
     var onContextSendMultiple: (() -> Void)?
     /// Show this PlayStation game's memory card (right-click ▸ Memory Card…).
     var onContextMemoryCard: (() -> Void)?
+    /// End this game's in-progress session (right-click ▸ Close Session) — clears the resume state.
+    var onContextCloseSession: (() -> Void)?
+
+    /// This game has a live suspend/resume session (draws the "in progress" badge + enables Close
+    /// Session). Set by the shelf from the on-disk resume state.
+    private(set) var sessionActive = false
+    func setSessionActive(_ active: Bool) {
+        guard sessionActive != active else { return }
+        sessionActive = active
+        needsDisplay = true
+    }
     /// The user's other devices, read lazily when the right-click menu opens (sync), so "Send to →"
     /// can list them. Empty → a plain broadcast "Send to My Devices".
     var sendTargets: () -> [String] = { [] }
@@ -204,6 +215,9 @@ class CartridgeTileView: NSView {
         }
 
         add("Play", symbol: "play.fill", #selector(contextPlay))
+        if sessionActive {
+            add("Close Session", symbol: "stop.circle", #selector(contextCloseSession))
+        }
         menu.addItem(.separator())
         add(game.favorite ? "Remove from Favorites" : "Add to Favorites",
             symbol: game.favorite ? "star.slash" : "star", #selector(contextToggleFavorite))
@@ -260,6 +274,7 @@ class CartridgeTileView: NSView {
     @objc private func contextSendToDevice(_ sender: NSMenuItem) { onContextSendTo?(sender.representedObject as? String) }
     @objc private func contextSendMultiple() { onContextSendMultiple?() }
     @objc private func contextMemoryCard() { onContextMemoryCard?() }
+    @objc private func contextCloseSession() { onContextCloseSession?() }
 
     // MARK: - Hover
 
@@ -300,6 +315,25 @@ class CartridgeTileView: NSView {
         }
 
         if game.favorite { drawFavoriteBadge(in: tile) }
+        if sessionActive { drawSessionBadge(in: tile) }
+    }
+
+    /// Marks a game with a live resume session ("session running"). A small dark chip in the top-left
+    /// with a white ▸ glyph — monochrome, so it reads as a status light, not a coloured accent.
+    private func drawSessionBadge(in tile: CGRect) {
+        let d: CGFloat = 24
+        let badge = CGRect(x: tile.minX + 6, y: tile.minY + 6, width: d, height: d)  // flipped: top = minY
+        NSColor(white: 0, alpha: 0.5).setFill()
+        NSBezierPath(ovalIn: badge).fill()
+        let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .bold)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [.white]))
+        if let glyph = NSImage(systemSymbolName: "play.fill", accessibilityDescription: "Session in progress")?
+            .withSymbolConfiguration(cfg) {
+            let s = glyph.size
+            let box = CGRect(x: badge.midX - s.width / 2, y: badge.midY - s.height / 2, width: s.width, height: s.height)
+            glyph.draw(in: box, from: .zero, operation: .sourceOver, fraction: isSelected ? 1 : 0.85,
+                       respectFlipped: true, hints: nil)
+        }
     }
 
     /// A small gold star pinned to the cartridge's top-right, on a soft dark disc so it reads over any

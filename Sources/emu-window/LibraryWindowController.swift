@@ -142,6 +142,7 @@ final class LibraryWindowController: NSObject {
         dashboard.onContextSend = { [weak self] game, target in self?.sendToDevices(game, target: target) }
         dashboard.onContextSendMultiple = { [weak self] game in self?.presentSendPicker(preselect: game) }
         dashboard.onContextMemoryCard = { [weak self] game in self?.presentMemoryCard(for: game) }
+        dashboard.onContextCloseSession = { [weak self] game in self?.closeSession(for: game) }
         dashboard.onDropURLs = { [weak self] in self?.importURLs($0) }
         dashboard.onAddROMs = { [weak self] in self?.addGames() }
         dashboard.onConfigure = { [weak self] in self?.showSettings() }
@@ -199,6 +200,25 @@ final class LibraryWindowController: NSObject {
         window.title = "Library"
         window.subtitle = n == 0 ? "" : "\(n) game\(n == 1 ? "" : "s")"   // native titlebar subtitle
         refreshContinueCard()
+        refreshSessions()
+    }
+
+    /// Mark the tiles of games that have a live resume session (a saved "continue" state) so the shelf
+    /// shows which games are in progress at a glance. Rebuilt after every reload and play/dismiss.
+    private func refreshSessions() {
+        let active = Set(store.games.filter { g in
+            let s = SaveStore(romURL: g.romURL)
+            return s.exists(s.suspendURL)
+        }.map { $0.id })
+        dashboard.setSessionGames(active)
+    }
+
+    /// End a game's session from the shelf: discard its resume/suspend state so the next launch starts
+    /// fresh. Manual save-state slots and the battery/memory-card are left untouched.
+    private func closeSession(for game: Game) {
+        let store = SaveStore(romURL: game.romURL)
+        store.remove(store.suspendURL)
+        refreshSessions()
     }
 
     // MARK: - Cross-device Continuity

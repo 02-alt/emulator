@@ -21,7 +21,16 @@ final class LibraryDashboardView: NSView {
     var onContextSendMultiple: ((Game) -> Void)?
     /// Show a PlayStation game's memory card — "Memory Card…" in a cart's menu.
     var onContextMemoryCard: ((Game) -> Void)?
+    var onContextCloseSession: ((Game) -> Void)?
     var onDropURLs: (([URL]) -> Void)?
+
+    /// Game ids that currently have a live resume session — drives the per-tile "in progress" badge.
+    /// Re-applied whenever tiles are rebuilt, so it survives reloads.
+    private var sessionGames: Set<UUID> = []
+    func setSessionGames(_ ids: Set<UUID>) {
+        sessionGames = ids
+        for t in tiles { t.setSessionActive(ids.contains(t.game.id)) }
+    }
     /// The user's other devices, cached by the controller and read when a tile's right-click menu
     /// opens, so "Send to →" can list them without an async hop mid-menu.
     var sendTargets: [String] = []
@@ -286,8 +295,10 @@ final class LibraryDashboardView: NSView {
             t.onContextSendTo = { [weak self] target in self?.onContextSend?(game, target) }
             t.onContextSendMultiple = { [weak self] in self?.onContextSendMultiple?(game) }
             t.onContextMemoryCard = { [weak self] in self?.onContextMemoryCard?(game) }
+            t.onContextCloseSession = { [weak self] in self?.onContextCloseSession?(game) }
             t.sendTargets = { [weak self] in self?.sendTargets ?? [] }
             t.onCarouselDrag = { [weak self] phase, dx in self?.handleCarouselDrag(phase, dx) }
+            t.setSessionActive(sessionGames.contains(game.id))
             addSubview(t)
             return t
         }
