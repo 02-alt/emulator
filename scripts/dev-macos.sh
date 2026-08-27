@@ -21,13 +21,14 @@ PROFILE="${PROFILE:-$HOME/Downloads/Encore_macOS_Dev.provisionprofile}"
 APP="$ROOT/dist/$APP_NAME.app"
 [ -f "$PROFILE" ] || { echo "✗ Provisioning profile not found at: $PROFILE (see setup notes in this script)"; exit 1; }
 
-echo "▸ Building…"; swift build --product "$EXE"
+CONFIG="${CONFIG:-debug}"   # set CONFIG=release for an optimized build (much faster PS1 HW readback)
+echo "▸ Building ($CONFIG)…"; swift build -c "$CONFIG" --product "$EXE"
 
 echo "▸ Assembling $APP_NAME.app…"
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp ".build/debug/$EXE" "$APP/Contents/MacOS/$EXE"
+cp ".build/$CONFIG/$EXE" "$APP/Contents/MacOS/$EXE"
 [ -f icon/AppIcon.icns ] && cp icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-cp -R .build/debug/*.bundle "$APP/Contents/Resources/" 2>/dev/null || true
+cp -R ".build/$CONFIG"/*.bundle "$APP/Contents/Resources/" 2>/dev/null || true
 
 # Sparkle auto-updater framework — the executable's @executable_path/../Frameworks rpath finds it here.
 # Without this the signed bundle dyld-crashes at launch ("Library not loaded: @rpath/Sparkle.framework").
