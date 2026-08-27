@@ -430,8 +430,8 @@ final class SettingsView: NSView {
 
         case .about:
             stack.addArrangedSubview(header(AppInfo.name))
-            stack.addArrangedSubview(hint("A macOS Game Boy Advance emulator — a cartridge shelf, faithful "
-                + "emulation, and your saves kept safe."))
+            stack.addArrangedSubview(hint("A macOS emulator for Game Boy Advance and PlayStation — a shelf "
+                + "of cartridges and discs, faithful emulation, and your saves kept safe."))
 
             // Updates — checks GitHub Releases and links the newer DMG if there is one.
             stack.addArrangedSubview(header("Updates"))
@@ -485,6 +485,12 @@ final class SettingsView: NSView {
             stack.addArrangedSubview(creditRow("mGBA",
                 "The Game Boy Advance emulation core. © endrift, MPL-2.0.",
                 link: "https://mgba.io"))
+            stack.addArrangedSubview(creditRow("Beetle PSX",
+                "The PlayStation emulation core, from Mednafen. GPL-2.0-or-later.",
+                link: "https://github.com/libretro/beetle-psx-libretro"))
+            stack.addArrangedSubview(creditRow("MoltenVK",
+                "Vulkan on Metal, powering the PlayStation hardware renderer. Apache-2.0.",
+                link: "https://github.com/KhronosGroup/MoltenVK"))
             stack.addArrangedSubview(creditRow("Libretro Database",
                 "Game titles, developers, and box-art matching. CC BY-SA 4.0.",
                 link: "https://github.com/libretro/libretro-database"))

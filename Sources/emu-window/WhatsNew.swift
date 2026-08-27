@@ -23,19 +23,24 @@ enum WhatsNew {
     /// The highlights of the latest update. Keep it short — three or four lines.
     static let items: [AppAlert.Feature] = [
         AppAlert.Feature(
-            symbol: "iphone.and.arrow.forward",
-            title: "Your library, on every device",
-            detail: "Your games follow you across your own devices through your private iCloud — it never leaves your account. Whatever you pick up arrives ready to play, saves and all, and the transfer copy clears once it lands."
-        ),
-        AppAlert.Feature(
-            symbol: "arrow.down.circle",
-            title: "Incoming games, made clear",
-            detail: "A distinct blue “Receive” card shows a game waiting to be brought over — separate from your Continue prompts, so you always know what’s a new game versus a resume."
+            symbol: "opticaldisc",
+            title: "PlayStation comes to the shelf",
+            detail: "Bring your own PS1 discs and they take their place beside the cartridges — as playable CDs. A one-time setup with your console’s BIOS, a controller in hand, and you’re in. Multi-disc games swap discs on their own."
         ),
         AppAlert.Feature(
             symbol: "sparkles",
-            title: "A little more delight",
-            detail: "Cartridges launch toward the cloud when you send and drop away when you delete — each with its own sound."
+            title: "Sharper than 1999",
+            detail: "PlayStation 3D is redrawn at a higher internal resolution with the classic polygon wobble smoothed away — the games you remember, only crisper. Optional widescreen, too."
+        ),
+        AppAlert.Feature(
+            symbol: "memorychip",
+            title: "A memory card of its own",
+            detail: "Every PlayStation game keeps its own memory card, wearing that game’s cover — with the real save blocks and their little pixel icons, just like the originals."
+        ),
+        AppAlert.Feature(
+            symbol: "trophy",
+            title: "Trophies, on disc too",
+            detail: "RetroAchievements now recognises your PlayStation games, so the same challenges and progress you know from the cartridges are here as well."
         ),
     ]
 
