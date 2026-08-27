@@ -499,6 +499,9 @@ final class PlayWindowController: NSObject, NSWindowDelegate {
     private let window: NSWindow
     private let session: PlaySession
     private var didClose = false
+    /// The game's aspect ratio, kept so it can be restored after leaving full-screen (where the lock
+    /// is dropped so the window fills the display).
+    private var gameAspect = NSSize(width: 4, height: 3)
 
     /// Called after the window closes and state is saved.
     var onClose: (() -> Void)?
@@ -530,11 +533,17 @@ final class PlayWindowController: NSObject, NSWindowDelegate {
         // Lock to the game's native aspect (3:2 GBA, 10:9 Game Boy / Color) so it fills the window
         // edge-to-edge with no letterbox bars. Inferred from the ROM; the mock core defaults to GBA.
         let system = romURL.map { GameSystem.infer(fromPath: $0.path) } ?? .gba
-        window.contentAspectRatio = NSSize(width: system.screenSize.width, height: system.screenSize.height)
+        gameAspect = NSSize(width: system.screenSize.width, height: system.screenSize.height)
+        window.contentAspectRatio = gameAspect
         window.contentMinSize = NSSize(width: (320 * system.screenAspect).rounded(), height: 320)
         window.setContentSize(NSSize(width: contentRect.width,
                                      height: (contentRect.width / system.screenAspect).rounded()))
         window.center()
+        // Allow native macOS full-screen (green button / ⌃⌘F). Safe: the renderer aspect-fits the
+        // frame, so at full-screen the game stays 4:3 and centered — never stretched. The window's
+        // aspect lock is dropped on the way in (and restored on the way out) so it fills the display
+        // instead of staying a small aspect-locked rectangle. See the NSWindowDelegate methods below.
+        window.collectionBehavior.insert(.fullScreenPrimary)
         window.delegate = self
 
         session.onExit = { [weak self] in self?.window.performClose(nil) }
@@ -551,5 +560,16 @@ final class PlayWindowController: NSObject, NSWindowDelegate {
         didClose = true
         session.saveAndStop()
         onClose?()
+    }
+
+    // Full-screen: drop the aspect lock so the window fills the whole display, then let the renderer
+    // aspect-fit (letterbox) the game inside it — the standard emulator full-screen look. Restore the
+    // lock on the way out so the windowed size still hugs the game with no bars.
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        window.contentAspectRatio = .zero        // .zero removes the constraint (window may fill freely)
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        window.contentAspectRatio = gameAspect
     }
 }
