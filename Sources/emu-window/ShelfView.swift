@@ -30,6 +30,7 @@ final class LibraryDashboardView: NSView {
     func setSessionGames(_ ids: Set<UUID>) {
         sessionGames = ids
         for t in tiles { t.setSessionActive(ids.contains(t.game.id)) }
+        needsDisplay = true   // the selected game's name-marker is drawn in drawDetailPanel
     }
     /// The user's other devices, cached by the controller and read when a tile's right-click menu
     /// opens, so "Send to →" can list them without an async hop mid-menu.
@@ -843,9 +844,15 @@ final class LibraryDashboardView: NSView {
         defer { ctx.restoreGState() }
 
         let titleY = carouselTop + tileSide + sc(40)
-        DS.Text.title(game.displayTitle, size: scf(32)).draw(
-            with: CGRect(x: labelX, y: titleY, width: bounds.width - labelX - sc(40), height: sc(44)),
-            options: [.usesLineFragmentOrigin])
+        let title = DS.Text.title(game.displayTitle, size: scf(32))
+        let maxTitleW = bounds.width - labelX - sc(40)
+        title.draw(with: CGRect(x: labelX, y: titleY, width: maxTitleW, height: sc(44)),
+                   options: [.usesLineFragmentOrigin])
+        // "Session running" marker, right after the game's name, when a resume state exists.
+        if sessionGames.contains(game.id) {
+            let titleW = min(title.size().width, maxTitleW)
+            drawSessionMarker(x: labelX + titleW + sc(12), centerY: titleY + scf(32) * 0.5)
+        }
 
         // Metadata table: labels at labelX, values at contentX. "-" for what we don't know yet.
         var y = titleY + titleToContentGap
@@ -860,6 +867,23 @@ final class LibraryDashboardView: NSView {
         }
 
         drawAchievements(titleY: titleY, ra: ra)
+    }
+
+    /// A small "session running" chip drawn next to the selected game's name — a subtle light pill
+    /// with a white ▸, on the dark detail panel. Marks that the game has a live resume session.
+    private func drawSessionMarker(x: CGFloat, centerY: CGFloat) {
+        let d = scf(22)
+        let badge = CGRect(x: x, y: centerY - d / 2, width: d, height: d)
+        NSColor(white: 1, alpha: 0.12).setFill()
+        NSBezierPath(ovalIn: badge).fill()
+        let cfg = NSImage.SymbolConfiguration(pointSize: d * 0.46, weight: .bold)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [.white]))
+        if let glyph = NSImage(systemSymbolName: "play.fill", accessibilityDescription: "Session in progress")?
+            .withSymbolConfiguration(cfg) {
+            let s = glyph.size
+            glyph.draw(in: CGRect(x: badge.midX - s.width / 2, y: badge.midY - s.height / 2, width: s.width, height: s.height),
+                       from: .zero, operation: .sourceOver, fraction: 0.9, respectFlipped: true, hints: nil)
+        }
     }
 
     /// Story progress bar + trophies summary (RetroAchievements), in the right column of the detail.
