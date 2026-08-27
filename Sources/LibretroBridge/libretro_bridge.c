@@ -97,7 +97,7 @@ struct LibretroCoreHandle {
     bool hw_frame;   // HW (Vulkan) mode: frames arrive as a GPU image to read back on copyVideo
     bool hw_dirty;   // a new HW image has arrived since the last read-back (else copyVideo reuses fb)
     bool hw_pending; // a Vulkan HW context is wanted but not yet created (deferred to the first run)
-    size_t max_px;   // frontend's copyVideo buffer capacity in pixels (0 = unbounded); caps the copy
+    uint32_t max_w, max_h; // frontend's copyVideo buffer dimensions (0 = unbounded); clamps the copy
 };
 
 // The one live core (libretro callbacks have no user-data pointer to route through).
@@ -483,28 +483,39 @@ void libretro_bridge_dimensions(LibretroCoreHandle* c, uint32_t* width, uint32_t
 
 void libretro_bridge_video(LibretroCoreHandle* c, uint32_t* out) {
     if (!c || !out || !c->fb) return;
+    // The frontend's `out` buffer is max_w × max_h; never produce a frame larger than that in either
+    // dimension. Cropping BOTH width and height (not just total pixels) keeps the row stride equal to
+    // the reported width, so the renderer never reads rows at the wrong offset — the cause of the
+    // scanline-scramble seen when a wide frame (e.g. 800px base × 4) overran a narrower buffer.
     if (c->hw_frame && c->hw_dirty) {
         // Only read back when the core delivered a new image since the last copy. Duped frames (NULL
         // video_refresh) leave the image unchanged, so re-reading it would just repeat an expensive
-        // GPU→CPU wait-idle for the same pixels; keep the last-read fb instead.
+        // GPU→CPU wait-idle for the same pixels; keep the last-read fb instead. vk_host_readback
+        // already clamps its output to (max_w, max_h) — pass the buffer dims, not the frame's own.
         vk_host_set_frame_size(c->fb_w, c->fb_h);
         uint32_t rw = 0, rh = 0;
-        if (vk_host_readback(c->fb, c->fb_w, c->fb_h, &rw, &rh)) { c->fb_w = rw; c->fb_h = rh; }
+        uint32_t cap_w = c->max_w ? c->max_w : c->fb_w;
+        uint32_t cap_h = c->max_h ? c->max_h : c->fb_h;
+        if (vk_host_readback(c->fb, cap_w, cap_h, &rw, &rh)) { c->fb_w = rw; c->fb_h = rh; }
         c->hw_dirty = false;
+    } else {
+        // Software path: fb already holds fb_w×fb_h tightly packed. Clamp height (extra rows just
+        // aren't copied) as a safety net; width is not post-croppable without re-striding, but the
+        // software renderer never exceeds the buffer width.
+        if (c->max_h && c->fb_h > c->max_h) c->fb_h = c->max_h;
+        if (c->max_w && c->fb_w > c->max_w) c->fb_w = c->max_w;
     }
-    // Never copy more than the destination holds. The frontend sizes `out` from videoSize's maximum;
-    // a dynamic-resolution frame that momentarily exceeds that (seen live at high internal resolution)
-    // would otherwise memcpy past the buffer and crash. Crop height to fit rather than overrun.
-    if (c->max_px && c->fb_w && (size_t)c->fb_w * c->fb_h > c->max_px) {
-        c->fb_h = (uint32_t)(c->max_px / c->fb_w);
+    if (getenv("EMU_DEBUG_VIDBOUNDS")) {
+        static uint32_t _lw, _lh; if (c->fb_w != _lw || c->fb_h != _lh) { _lw = c->fb_w; _lh = c->fb_h;
+            fprintf(stderr, "vid: %ux%u (cap %ux%u)\n", c->fb_w, c->fb_h, c->max_w, c->max_h); }
     }
     memcpy(out, c->fb, (size_t)c->fb_w * c->fb_h * sizeof(uint32_t));
 }
 
-// Tell the bridge the pixel capacity of the buffer passed to libretro_bridge_video, so it can never
-// overrun it when a dynamic-resolution frame reports a larger size than the frontend allocated for.
-void libretro_bridge_set_max_video_pixels(LibretroCoreHandle* c, uint32_t pixels) {
-    if (c) c->max_px = pixels;
+// Tell the bridge the width×height of the buffer passed to libretro_bridge_video, so it never produces
+// a frame exceeding it in either dimension (which would overrun the buffer or mismatch the row stride).
+void libretro_bridge_set_max_video_dims(LibretroCoreHandle* c, uint32_t w, uint32_t h) {
+    if (c) { c->max_w = w; c->max_h = h; }
 }
 
 double libretro_bridge_sample_rate(LibretroCoreHandle* c) { return c ? c->sample_rate : 44100.0; }

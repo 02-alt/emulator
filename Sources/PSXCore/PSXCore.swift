@@ -13,10 +13,13 @@ import LibretroBridge
 public final class PSXCore: EmulatorCore {
     public static var system: EmulatedSystem { .ps1 }
 
-    /// Native upper bound on the frame the PS1 emits at 1× — generous enough to cover every mode plus
-    /// overscan borders (~700 wide / 576 tall interlaced). The real ceiling scales with
-    /// `internalScale`, since a higher internal resolution multiplies both dimensions.
-    public static let nativeMaxResolution = (width: 768, height: 576)
+    /// Native upper bound on the frame the PS1 emits at 1×. Width is Beetle's framebuffer width
+    /// (`FB_WIDTH` = 1024) — the hard ceiling for any scanout, since the display can't be wider than
+    /// VRAM. This is deliberately generous: some modes emit ~800px wide (wider than the core's own
+    /// declared 700 max), and a too-small ceiling makes the frontend buffer narrower than the frame,
+    /// which mismatches the row stride and scrambles the image. Height 576 covers PAL interlaced. The
+    /// real ceiling scales with `internalScale`.
+    public static let nativeMaxResolution = (width: 1024, height: 576)
 
     private let handle: OpaquePointer
     private let systemDir: URL
@@ -88,11 +91,12 @@ public final class PSXCore: EmulatorCore {
         }
         applyEnhancements()
         // Bound copyVideo to exactly the buffer the frontend allocates from `videoSize` (the scaled
-        // max). PS1 resolution is dynamic, and the HW renderer can briefly report a frame over the max
-        // at high internal scale; without this cap that frame's copy overruns the buffer and crashes.
+        // max). PS1 resolution is dynamic, and the HW renderer can report a frame over the max at high
+        // internal scale; without this cap that frame's copy overruns the buffer (crash) or, if only
+        // the width exceeds it, mismatches the row stride (scanline scramble).
         let maxW = Self.nativeMaxResolution.width * internalScale
         let maxH = Self.nativeMaxResolution.height * internalScale
-        libretro_bridge_set_max_video_pixels(handle, UInt32(maxW * maxH))
+        libretro_bridge_set_max_video_dims(handle, UInt32(maxW), UInt32(maxH))
         guard libretro_bridge_load_game(handle, url.path) else {
             throw EmulatorCoreError.invalidROM(reason: "Beetle PSX could not load \(url.lastPathComponent)")
         }
