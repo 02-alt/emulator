@@ -87,6 +87,12 @@ public final class PSXCore: EmulatorCore {
             throw EmulatorCoreError.biosRequired
         }
         applyEnhancements()
+        // Bound copyVideo to exactly the buffer the frontend allocates from `videoSize` (the scaled
+        // max). PS1 resolution is dynamic, and the HW renderer can briefly report a frame over the max
+        // at high internal scale; without this cap that frame's copy overruns the buffer and crashes.
+        let maxW = Self.nativeMaxResolution.width * internalScale
+        let maxH = Self.nativeMaxResolution.height * internalScale
+        libretro_bridge_set_max_video_pixels(handle, UInt32(maxW * maxH))
         guard libretro_bridge_load_game(handle, url.path) else {
             throw EmulatorCoreError.invalidROM(reason: "Beetle PSX could not load \(url.lastPathComponent)")
         }

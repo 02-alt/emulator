@@ -45,6 +45,10 @@ void libretro_bridge_dimensions(LibretroCoreHandle* c, uint32_t* width, uint32_t
 /// emitted. If the core duped the frame (emitted NULL), the previous frame is copied.
 void libretro_bridge_video(LibretroCoreHandle* c, uint32_t* out);
 
+/// Pixel capacity of the buffer passed to `libretro_bridge_video`. When set, a dynamic-resolution
+/// frame reporting more pixels than this is cropped (never copied past the buffer). 0 = unbounded.
+void libretro_bridge_set_max_video_pixels(LibretroCoreHandle* c, uint32_t pixels);
+
 /// Audio sample rate (Hz) and nominal video FPS the core reports via retro_get_system_av_info.
 double libretro_bridge_sample_rate(LibretroCoreHandle* c);
 double libretro_bridge_fps(LibretroCoreHandle* c);

@@ -97,6 +97,7 @@ struct LibretroCoreHandle {
     bool hw_frame;   // HW (Vulkan) mode: frames arrive as a GPU image to read back on copyVideo
     bool hw_dirty;   // a new HW image has arrived since the last read-back (else copyVideo reuses fb)
     bool hw_pending; // a Vulkan HW context is wanted but not yet created (deferred to the first run)
+    size_t max_px;   // frontend's copyVideo buffer capacity in pixels (0 = unbounded); caps the copy
 };
 
 // The one live core (libretro callbacks have no user-data pointer to route through).
@@ -491,7 +492,19 @@ void libretro_bridge_video(LibretroCoreHandle* c, uint32_t* out) {
         if (vk_host_readback(c->fb, c->fb_w, c->fb_h, &rw, &rh)) { c->fb_w = rw; c->fb_h = rh; }
         c->hw_dirty = false;
     }
+    // Never copy more than the destination holds. The frontend sizes `out` from videoSize's maximum;
+    // a dynamic-resolution frame that momentarily exceeds that (seen live at high internal resolution)
+    // would otherwise memcpy past the buffer and crash. Crop height to fit rather than overrun.
+    if (c->max_px && c->fb_w && (size_t)c->fb_w * c->fb_h > c->max_px) {
+        c->fb_h = (uint32_t)(c->max_px / c->fb_w);
+    }
     memcpy(out, c->fb, (size_t)c->fb_w * c->fb_h * sizeof(uint32_t));
+}
+
+// Tell the bridge the pixel capacity of the buffer passed to libretro_bridge_video, so it can never
+// overrun it when a dynamic-resolution frame reports a larger size than the frontend allocated for.
+void libretro_bridge_set_max_video_pixels(LibretroCoreHandle* c, uint32_t pixels) {
+    if (c) c->max_px = pixels;
 }
 
 double libretro_bridge_sample_rate(LibretroCoreHandle* c) { return c ? c->sample_rate : 44100.0; }
