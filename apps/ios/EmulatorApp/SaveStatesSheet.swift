@@ -31,95 +31,193 @@ struct SaveSlot: Identifiable {
     }
 }
 
-/// The iOS **Save States** panel — six numbered slots you can Save into and Load from, each showing a
-/// thumbnail of the frame it was captured on. The port of the macOS Save States panel. Presented as a
-/// sheet from the play screen; the caller pauses emulation while it's open.
+/// The iOS **Save States** panel — six numbered slots shown as a horizontal *timeline* of framed
+/// moments. A Save/Load mode switch at the top decides what a tap does: in **Save** you tap a frame to
+/// write the live moment into it, in **Load** you tap a saved frame to jump back to it. The explicit
+/// mode means a stray tap can't overwrite or clobber your progress. The port of the macOS Save States
+/// panel; presented as a sheet from the play screen, which pauses emulation while it's open so the
+/// captured frame + state are the moment you opened it.
 struct SaveStatesSheet: View {
     let directory: URL?
-    /// Save the live state into a slot; completion reports success so the row can refresh.
+    /// Save the live state into a slot; completion reports success so the strip can refresh.
     let onSave: (SaveSlot, @escaping (Bool) -> Void) -> Void
     /// Load a slot into the live game; completion reports success so the sheet can close.
     let onLoad: (SaveSlot, @escaping (Bool) -> Void) -> Void
 
+    /// Whether a tap on a frame saves into it or loads it.
+    private enum Mode: String, CaseIterable {
+        case save = "Save"
+        case load = "Load"
+        var icon: String { self == .save ? "square.and.arrow.down" : "arrow.down.circle" }
+    }
+
     @Environment(\.dismiss) private var dismiss
     @State private var slots: [SaveSlot] = []
+    @State private var mode: Mode = .save
+    @Namespace private var modeNS
+
+    /// Slot index of the most recently written save — accented on the strip as "where you last were".
+    private var latestIndex: Int? {
+        slots.filter { $0.exists }
+            .max { ($0.modified ?? .distantPast) < ($1.modified ?? .distantPast) }?
+            .index
+    }
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    ForEach(slots) { slot in row(slot) }
-                } footer: {
-                    Text("Each slot holds a full snapshot. Swipe a slot to delete it.")
-                        .font(.system(size: 11, design: .monospaced))
+            VStack(spacing: 0) {
+                modeSwitcher
+                    .padding(.horizontal, 20)
+                    .padding(.top, 14)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: 14) {
+                        ForEach(slots) { slot in card(slot) }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 18)
                 }
             }
-            .listStyle(.insetGrouped)
-            .navigationTitle("Save States")
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(DS.background)
+            .safeAreaInset(edge: .bottom) {
+                Text(mode == .save
+                    ? "Tap a frame to save this moment into it · long-press to delete"
+                    : "Tap a saved moment to jump back to it · long-press to delete")
+                    .font(DS.mono(10))
+                    .foregroundStyle(DS.textTertiary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 8)
+            }
+            .navigationTitle("Timeline")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }.fontWeight(.semibold)
+                    Button("Done") { dismiss() }.fontWeight(.semibold).tint(.white)
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.height(300), .large])
         .presentationDragIndicator(.visible)
         .preferredColorScheme(.dark)
         .onAppear(perform: refresh)
     }
 
-    @ViewBuilder
-    private func row(_ slot: SaveSlot) -> some View {
-        HStack(spacing: 12) {
-            thumbnail(slot)
+    // MARK: - Mode switcher
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("SLOT \(slot.index)")
-                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                Text(status(slot))
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
+    /// A slate-blue segmented pill — Save on the left, Load on the right — with a sliding highlight.
+    private var modeSwitcher: some View {
+        HStack(spacing: 4) {
+            ForEach(Mode.allCases, id: \.self) { m in
+                Button {
+                    withAnimation(.snappy(duration: 0.22)) { mode = m }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: m.icon).font(.system(size: 12, weight: .semibold))
+                        Text(m.rawValue).font(DS.mono(13, .semibold))
+                    }
+                    .foregroundStyle(mode == m ? .white : DS.textSecondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background {
+                        if mode == m {
+                            Capsule().fill(DS.accent)
+                                .matchedGeometryEffect(id: "modePill", in: modeNS)
+                        }
+                    }
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
             }
-
-            Spacer(minLength: 8)
-
-            Button("SAVE") { onSave(slot) { _ in refresh() } }
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .tint(DS.accent)
-
-            Button("LOAD") { onLoad(slot) { ok in if ok { dismiss() } } }
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .tint(.white)
-                .disabled(!slot.exists)
         }
-        .swipeActions(edge: .trailing) {
+        .padding(4)
+        .background(Capsule().fill(Color(white: 0.11)))
+    }
+
+    // MARK: - Card
+
+    private let cardWidth: CGFloat = 150   // thumbnail 150×100 keeps the GBA 3:2 aspect
+
+    @ViewBuilder
+    private func card(_ slot: SaveSlot) -> some View {
+        let isLatest = slot.index == latestIndex
+        // In Load mode an empty slot has nothing to do — dim it and swallow the tap.
+        let disabled = mode == .load && !slot.exists
+
+        Button {
+            if mode == .save {
+                onSave(slot) { _ in refresh() }
+            } else if slot.exists {
+                onLoad(slot) { ok in if ok { dismiss() } }
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                thumbnail(slot, isLatest: isLatest)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("SLOT \(slot.index)")
+                        .font(DS.mono(11, .semibold))
+                        .foregroundStyle(isLatest ? DS.accent : DS.textPrimary)
+                    Text(status(slot))
+                        .font(DS.mono(10))
+                        .foregroundStyle(DS.textSecondary)
+                }
+            }
+            .frame(width: cardWidth, alignment: .leading)
+            .contentShape(Rectangle())
+            .opacity(disabled ? 0.4 : 1)
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .contextMenu {
             if slot.exists {
+                Button { onLoad(slot) { ok in if ok { dismiss() } } } label: {
+                    Label("Load", systemImage: "arrow.down.circle")
+                }
+                Button { onSave(slot) { _ in refresh() } } label: {
+                    Label("Overwrite", systemImage: "square.and.arrow.down")
+                }
                 Button(role: .destructive) { delete(slot) } label: {
                     Label("Delete", systemImage: "trash")
                 }
+            } else {
+                Button { onSave(slot) { _ in refresh() } } label: {
+                    Label("Save here", systemImage: "square.and.arrow.down")
+                }
             }
         }
+        .accessibilityLabel(slot.exists
+            ? "Slot \(slot.index), \(status(slot)). Double-tap to load."
+            : "Slot \(slot.index), empty. Double-tap to save.")
     }
 
     @ViewBuilder
-    private func thumbnail(_ slot: SaveSlot) -> some View {
+    private func thumbnail(_ slot: SaveSlot, isLatest: Bool) -> some View {
         Group {
             if let img = slot.thumbnail {
                 Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
             } else {
-                RoundedRectangle(cornerRadius: 6).fill(Color(white: 0.12))
-                    .overlay(Image(systemName: "square.dashed")
-                        .font(.system(size: 14)).foregroundStyle(.tertiary))
+                RoundedRectangle(cornerRadius: 10).fill(Color(white: 0.08))
+                    .overlay(
+                        Image(systemName: "plus")
+                            .font(.system(size: 22, weight: .light))
+                            .foregroundStyle(DS.textTertiary)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                            .foregroundStyle(DS.textTertiary.opacity(0.6))
+                    )
             }
         }
-        .frame(width: 58, height: 39)   // 3:2, the GBA screen aspect
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(.white.opacity(0.12), lineWidth: 1))
+        .frame(width: cardWidth, height: cardWidth * 2 / 3)   // 3:2, the GBA screen aspect
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isLatest ? DS.accent : .white.opacity(0.12),
+                        lineWidth: isLatest ? 2 : 1)
+        )
+        .shadow(color: isLatest ? DS.accent.opacity(0.5) : .clear, radius: 10)
     }
 
     private func status(_ slot: SaveSlot) -> String {
