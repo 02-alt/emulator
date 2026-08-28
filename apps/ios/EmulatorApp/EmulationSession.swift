@@ -264,7 +264,10 @@ final class EmulationSession: @unchecked Sendable {
                     data: base, width: w, height: h,
                     bitsPerComponent: 8, bytesPerRow: w * 4,
                     space: CGColorSpaceCreateDeviceRGB(),
-                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+                    // The core leaves the alpha byte at 0x00 (the Metal shader forces output alpha to 1,
+                    // so the live picture is fine). Treat the frame as opaque RGBX here — using
+                    // premultipliedLast instead makes every pixel fully transparent → a black thumbnail.
+                    bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue),
                   let cg = ctx.makeImage()
             else { return nil }
             return UIImage(cgImage: cg).pngData()
