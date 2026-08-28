@@ -457,7 +457,7 @@ final class PlaySession: NSObject {
             switch system {
             case .ps1:
                 let psx = try PSXCore(systemDir: AppPaths.psxSystemDir, saveDir: AppPaths.psxSavesDir,
-                                      hardware: Settings.shared.psxHardware)
+                                      hardware: Settings.shared.psxHardware && PSXCore.isHardwareRendererAvailable)
                 psx.internalScale = Settings.shared.psxInternalScale
                 psx.widescreen = Settings.shared.psxWidescreen
                 try psx.loadROM(at: romURL)

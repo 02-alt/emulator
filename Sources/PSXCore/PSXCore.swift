@@ -264,6 +264,14 @@ public final class PSXCore: EmulatorCore {
         // Dev fallback: the vendored build output, relative to the package root.
         return URL(fileURLWithPath: "vendor/beetle-psx-libretro/\(name).dylib")
     }
+
+    /// Whether the Vulkan hardware renderer can actually be loaded — true only when its core dylib is
+    /// bundled (dev builds bundle it + MoltenVK; the mature software-only release does not). Gates the
+    /// Settings ▸ Video toggle so a build without it never offers an option that would fail to launch.
+    public static var isHardwareRendererAvailable: Bool {
+        if ProcessInfo.processInfo.environment["EMU_PSX_HW_CORE"] != nil { return true }
+        return Bundle.main.url(forResource: "mednafen_psx_hw_libretro", withExtension: "dylib") != nil
+    }
 }
 
 /// libretro constants we need Swift-side, mirrored from libretro.h (which the bridge module keeps

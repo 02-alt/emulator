@@ -93,21 +93,16 @@ codesign -f -o runtime --timestamp -s "$IDENTITY" "$FW/Autoupdate"
 codesign -f -o runtime --timestamp -s "$IDENTITY" "$FW/Updater.app"
 codesign -f -o runtime --timestamp -s "$IDENTITY" "$APP/Contents/Frameworks/Sparkle.framework"
 
-# PlayStation emulation: the Beetle PSX cores + MoltenVK are runtime-loaded (dlopen'd from Resources).
-# Ship the software core always; the hardware core + MoltenVK only when present (the Settings ▸ Video
-# "Hardware Renderer" toggle needs them). Sign each with our Developer ID + hardened runtime + timestamp
-# so notarization accepts them and hardened-runtime library validation allows the dlopen (same team).
+# PlayStation emulation: the Beetle PSX **software** core is runtime-loaded (dlopen'd from Resources).
+# We ship only the mature software renderer — the experimental Vulkan hardware core + MoltenVK are NOT
+# bundled (the Settings ▸ Video toggle hides itself when the HW core is absent, so nobody can enable a
+# path that isn't shipped). Sign the core with our Developer ID + hardened runtime + timestamp so
+# notarization accepts it and hardened-runtime library validation allows the dlopen (same team).
 # NOTE: Beetle PSX / Mednafen is GPL-2.0-or-later — bundling it in a distributed build carries GPL
 # obligations (source available at the linked upstream; see the About tab attribution).
-echo "▸ Bundling PlayStation cores + MoltenVK…"
-for LIB in \
-    "vendor/beetle-psx-libretro/mednafen_psx_libretro.dylib" \
-    "vendor/beetle-psx-libretro/mednafen_psx_hw_libretro.dylib" \
-    "vendor/moltenvk/libMoltenVK.dylib"; do
-    [ -f "$LIB" ] || continue
-    cp "$LIB" "$APP/Contents/Resources/"
-    codesign -f -o runtime --timestamp -s "$IDENTITY" "$APP/Contents/Resources/$(basename "$LIB")"
-done
+echo "▸ Bundling PlayStation core (software renderer)…"
+cp "vendor/beetle-psx-libretro/mednafen_psx_libretro.dylib" "$APP/Contents/Resources/"
+codesign -f -o runtime --timestamp -s "$IDENTITY" "$APP/Contents/Resources/mednafen_psx_libretro.dylib"
 
 # The SwiftPM resource bundles are *shallow* (data only, no Mach-O) — they get sealed as resources
 # when the app is signed, so we sign the app itself, not each bundle.

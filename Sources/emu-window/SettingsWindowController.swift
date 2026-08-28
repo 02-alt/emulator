@@ -1,6 +1,7 @@
 import AppKit
 import GameController
 import LibraryKit
+import PSXCore
 
 /// The Settings window — a thin `NSWindow` wrapper around the shared ``SettingsView``. Used by the
 /// **Library** (where a standalone window is appropriate); the **play window** embeds the same
@@ -253,8 +254,12 @@ final class SettingsView: NSView {
             stack.addArrangedSubview(row("Resolution", res))
             let wide = onOff(Settings.shared.psxWidescreen) { Settings.shared.psxWidescreen = $0 }
             stack.addArrangedSubview(row("Widescreen", wide))
-            let hw = onOff(Settings.shared.psxHardware) { Settings.shared.psxHardware = $0 }
-            stack.addArrangedSubview(row("Hardware Renderer", hw))
+            // The hardware (Vulkan) renderer is only offered when its core is actually bundled — the
+            // mature software-only release doesn't ship it, so the toggle stays hidden there.
+            if PSXCore.isHardwareRendererAvailable {
+                let hw = onOff(Settings.shared.psxHardware) { Settings.shared.psxHardware = $0 }
+                stack.addArrangedSubview(row("Hardware Renderer", hw))
+            }
             stack.addArrangedSubview(hint("A higher internal resolution sharpens 3D models (2D art stays "
                 + "native) — 2× is a safe default; 4× and 8× look sharper but need a fast Mac to hold full "
                 + "speed. Widescreen renders 3D at 16:9, though 2D elements may stretch. The hardware "
