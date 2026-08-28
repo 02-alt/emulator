@@ -30,7 +30,7 @@ enum WhatsNew {
         AppAlert.Feature(
             symbol: "sparkles",
             title: "Sharper than 1999",
-            detail: "PlayStation 3D is redrawn at a higher internal resolution with the classic polygon wobble smoothed away — the games you remember, only crisper. Optional widescreen, too."
+            detail: "PlayStation 3D is redrawn at a higher internal resolution with the classic polygon wobble smoothed away — the games you remember, only crisper. An optional hardware renderer (Settings ▸ Video) pushes it to 4× on Apple Silicon at full speed; widescreen too."
         ),
         AppAlert.Feature(
             symbol: "memorychip",
