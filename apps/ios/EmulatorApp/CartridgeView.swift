@@ -32,15 +32,19 @@ struct CartridgeView: View {
     var intensity: CGFloat = 1
     var coverOpacity: Double = 1
     var crop: CoverCrop? = nil
+    /// When set, laminates a holographic foil over the cover, shifting with this tilt (−1…1 per axis).
+    /// `nil` on the shelf so carts stay flat; supplied by the long-press preview.
+    var foilTilt: CGSize? = nil
 
     var body: some View {
         switch system {
         case .gba:
             GBACartridgeView(cover: cover, title: title, systemTag: systemTag,
-                             intensity: intensity, coverOpacity: coverOpacity, crop: crop)
-        case .gbc:
+                             intensity: intensity, coverOpacity: coverOpacity, crop: crop, foilTilt: foilTilt)
+        case .gbc, .ps1:
+            // iOS has no bespoke PS1 disc-case art yet; reuse the square Game Boy cart as a placeholder.
             GBCCartridgeView(cover: cover, title: title, systemTag: systemTag,
-                             intensity: intensity, coverOpacity: coverOpacity, crop: crop)
+                             intensity: intensity, coverOpacity: coverOpacity, crop: crop, foilTilt: foilTilt)
         }
     }
 
@@ -49,7 +53,7 @@ struct CartridgeView: View {
     static func labelAspect(for system: GameSystem) -> CGFloat {
         switch system {
         case .gba: return GBACartridgeView.labelAspect
-        case .gbc: return GBCCartridgeView.labelAspect
+        case .gbc, .ps1: return GBCCartridgeView.labelAspect
         }
     }
 
@@ -58,7 +62,7 @@ struct CartridgeView: View {
     static func cartAspect(for system: GameSystem) -> CGFloat {
         switch system {
         case .gba: return 1.78
-        case .gbc: return GBCCartridgeView.cartAspect
+        case .gbc, .ps1: return GBCCartridgeView.cartAspect
         }
     }
 }
@@ -83,6 +87,8 @@ struct GBACartridgeView: View {
     /// Optional per-game framing of the cover within the label window. `nil`/`.full` → centered
     /// aspect-fill; otherwise the normalized crop is applied non-destructively at display time.
     var crop: CoverCrop? = nil
+    /// Holographic-foil tilt (−1…1 per axis); `nil` → no foil (the shelf). See `foilOverlay`.
+    var foilTilt: CGSize? = nil
 
     /// The label window's width:height. Any cover crop is authored at this aspect so it fills without
     /// distortion (see `CoverCropEditor`).
@@ -109,10 +115,65 @@ struct GBACartridgeView: View {
                 // as the Mac's `fillLabel`. Drawn as a real view so the crop + rounding are exact.
                 if let cover {
                     coverArt(cover, win: win, radius: bw * 0.03)
+                        .overlay { glassOverlay(radius: bw * 0.03) }   // clear Liquid Glass pane (iOS 26+)
+                        .compositingGroup()
+                        // Hard-clip so the glass never spills past the cover at full tilt.
+                        .clipShape(RoundedRectangle(cornerRadius: bw * 0.03))
                         .opacity(coverOpacity)
                         .position(x: win.midX, y: win.midY)
                 }
             }
+        }
+    }
+
+    /// Holographic foil laminated over the cover label (clipped to its rounded rect) — only in the
+    /// long-press preview (`foilTilt` set); `nil` on the shelf. Color-dodges onto the bright cover art.
+    @ViewBuilder
+    private func foilOverlay(cover: UIImage, win: CGRect, radius: CGFloat) -> some View {
+        if let foilTilt {
+            HolographicFoil(tilt: foilTilt, intensity: intensity)
+                // Mask the foil by the cover art's own luminance so the shimmer hugs the bright/whitish
+                // areas and skips the dark ones — an embossed, 3D foil rather than a flat sheet. (This is
+                // how the CSS masks holo to regions.) The cover clip also bounds it, so no edge fringe.
+                .mask(coverArt(cover, win: win, radius: radius).luminanceToAlpha())
+                .blendMode(.colorDodge)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// A clear Liquid Glass pane over the cover — the label sits under glossy glass, so it gets Apple's
+    /// real refraction and a specular highlight that shifts as you move the phone. Only in the long-press
+    /// preview (gated on `foilTilt`); iOS 26+ only, a no-op below that.
+    @ViewBuilder
+    private func glassOverlay(radius: CGFloat) -> some View {
+        if let foilTilt, #available(iOS 26.0, *) {
+            let shape = RoundedRectangle(cornerRadius: radius)
+            GeometryReader { _ in
+                ZStack {
+                    // The real Liquid Glass pane (keeps the art crisp, adds refraction).
+                    Color.clear.glassEffect(.clear.interactive(), in: shape)
+
+                    // A bold glossy highlight that sweeps across as you tilt — the visible "glass catching
+                    // the light" the native material is too subtle to show on its own.
+                    LinearGradient(
+                        gradient: Gradient(stops: [
+                            .init(color: .clear, location: 0.2),
+                            .init(color: .white.opacity(0.3), location: 0.5),
+                            .init(color: .clear, location: 0.8),
+                        ]),
+                        startPoint: UnitPoint(x: -0.5 + foilTilt.width * 0.8, y: -0.2 + foilTilt.height * 0.4),
+                        endPoint: UnitPoint(x: 0.5 + foilTilt.width * 0.8, y: 1.2 + foilTilt.height * 0.4))
+                        .blendMode(.plusLighter)
+                        .clipShape(shape)
+
+                    // Glass edge rim so it reads as a raised pane.
+                    shape.strokeBorder(
+                        LinearGradient(colors: [.white.opacity(0.6), .white.opacity(0.1)],
+                                       startPoint: .top, endPoint: .bottom),
+                        lineWidth: 1)
+                }
+            }
+            .allowsHitTesting(false)
         }
     }
 
@@ -156,7 +217,7 @@ struct GBACartridgeView: View {
 
     /// Outer silhouette, clockwise from the top-left of the flat top edge. The top corners bulge
     /// out to full width (the shoulders) then taper back to the straight sides.
-    static func silhouette(_ box: CGRect) -> Path {
+    private static func silhouette(_ box: CGRect) -> Path {
         func F(_ fx: CGFloat, _ fy: CGFloat) -> CGPoint { pt(box, fx, fy) }
         let tiX: CGFloat = 0.041                          // flat top edge inset
         let sXL: CGFloat = 0.027, sXR: CGFloat = 0.973    // straight sides
@@ -290,6 +351,8 @@ struct GBCCartridgeView: View {
     var intensity: CGFloat = 1
     var coverOpacity: Double = 1
     var crop: CoverCrop? = nil
+    /// Holographic-foil tilt (−1…1 per axis); `nil` → no foil (the shelf). See `foilOverlay`.
+    var foilTilt: CGSize? = nil
 
     /// Cart silhouette width ÷ height (portrait).
     static let cartAspect: CGFloat = 0.90
@@ -315,10 +378,65 @@ struct GBCCartridgeView: View {
                 }
                 if let cover {
                     coverArt(cover, win: win, radius: bw * 0.03)
+                        .overlay { glassOverlay(radius: bw * 0.03) }   // clear Liquid Glass pane (iOS 26+)
+                        .compositingGroup()
+                        // Hard-clip so the glass never spills past the cover at full tilt.
+                        .clipShape(RoundedRectangle(cornerRadius: bw * 0.03))
                         .opacity(coverOpacity)
                         .position(x: win.midX, y: win.midY)
                 }
             }
+        }
+    }
+
+    /// Holographic foil laminated over the cover label — only in the long-press preview (`foilTilt`
+    /// set); `nil` on the shelf.
+    @ViewBuilder
+    private func foilOverlay(cover: UIImage, win: CGRect, radius: CGFloat) -> some View {
+        if let foilTilt {
+            HolographicFoil(tilt: foilTilt, intensity: intensity)
+                // Mask the foil by the cover art's own luminance so the shimmer hugs the bright/whitish
+                // areas and skips the dark ones — an embossed, 3D foil rather than a flat sheet. (This is
+                // how the CSS masks holo to regions.) The cover clip also bounds it, so no edge fringe.
+                .mask(coverArt(cover, win: win, radius: radius).luminanceToAlpha())
+                .blendMode(.colorDodge)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// A clear Liquid Glass pane over the cover — the label sits under glossy glass, so it gets Apple's
+    /// real refraction and a specular highlight that shifts as you move the phone. Only in the long-press
+    /// preview (gated on `foilTilt`); iOS 26+ only, a no-op below that.
+    @ViewBuilder
+    private func glassOverlay(radius: CGFloat) -> some View {
+        if let foilTilt, #available(iOS 26.0, *) {
+            let shape = RoundedRectangle(cornerRadius: radius)
+            GeometryReader { _ in
+                ZStack {
+                    // The real Liquid Glass pane (keeps the art crisp, adds refraction).
+                    Color.clear.glassEffect(.clear.interactive(), in: shape)
+
+                    // A bold glossy highlight that sweeps across as you tilt — the visible "glass catching
+                    // the light" the native material is too subtle to show on its own.
+                    LinearGradient(
+                        gradient: Gradient(stops: [
+                            .init(color: .clear, location: 0.2),
+                            .init(color: .white.opacity(0.3), location: 0.5),
+                            .init(color: .clear, location: 0.8),
+                        ]),
+                        startPoint: UnitPoint(x: -0.5 + foilTilt.width * 0.8, y: -0.2 + foilTilt.height * 0.4),
+                        endPoint: UnitPoint(x: 0.5 + foilTilt.width * 0.8, y: 1.2 + foilTilt.height * 0.4))
+                        .blendMode(.plusLighter)
+                        .clipShape(shape)
+
+                    // Glass edge rim so it reads as a raised pane.
+                    shape.strokeBorder(
+                        LinearGradient(colors: [.white.opacity(0.6), .white.opacity(0.1)],
+                                       startPoint: .top, endPoint: .bottom),
+                        lineWidth: 1)
+                }
+            }
+            .allowsHitTesting(false)
         }
     }
 

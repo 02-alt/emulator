@@ -31,12 +31,8 @@ struct HolographicCartridge: View {
                 let ty = motion.isAvailable ? motion.tiltY : CGFloat(cos(t * 0.55)) * 0.5
 
                 CartridgeView(system: system, cover: cover, title: title,
-                              systemTag: systemTag, crop: crop)
-                    .colorEffect(ShaderLibrary.plasticSheen(
-                        .float2(geo.size),
-                        .float2(Float(tx), Float(ty)),
-                        .float(Float(t.truncatingRemainder(dividingBy: 1000)))
-                    ))
+                              systemTag: systemTag, crop: crop,
+                              foilTilt: CGSize(width: tx, height: ty))
                     // A gentle parallax bank toward the light, so the sheen reads as a reflection off
                     // a physical surface rather than a moving decal.
                     .rotation3DEffect(.degrees(Double(tx) * 10), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
