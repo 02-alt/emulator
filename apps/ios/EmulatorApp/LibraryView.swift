@@ -29,8 +29,16 @@ struct LibraryView: View {
     @State private var showSettings = false
     @State private var showSearch = false
     @State private var arrival: ArrivalInfo?
-    /// The games (first three) currently flying up in the send flourish; empty when idle.
-    @State private var sendFlourish: [Game] = []
+    /// The in-flight send animation: the (up to three) cartridges streaking toward iCloud, the
+    /// destination label, and the live upload result — nil while uploading, then success/failure — so
+    /// the flourish resolves into a real "Sent ✓ / couldn't reach iCloud" beat instead of firing and
+    /// forgetting. Nil when idle.
+    struct SendFlight {
+        let games: [Game]
+        let dest: String
+        var result: Bool?
+    }
+    @State private var sendFlight: SendFlight?
     /// A game currently dropping away in the delete flourish; nil when idle.
     @State private var deleteFlourish: Game?
     @State private var focusedCartFrame: CGRect?
@@ -94,8 +102,9 @@ struct LibraryView: View {
             }
         }
         .overlay {
-            if !sendFlourish.isEmpty {
-                SendFlourishView(games: sendFlourish, covers: library.covers) { sendFlourish = [] }
+            if let flight = sendFlight {
+                SendFlourishView(games: flight.games, covers: library.covers,
+                                 dest: flight.dest, result: flight.result) { sendFlight = nil }
                     .allowsHitTesting(false)
                     .zIndex(25)
             }
@@ -462,9 +471,10 @@ struct LibraryView: View {
         }
     }
 
-    /// Kick off the send flourish — the first three sent cartridges streak up off the top, toward iCloud.
-    private func playSendFlourish(_ games: [Game]) {
-        sendFlourish = Array(games.prefix(3))
+    /// Kick off the send flourish — the first three sent cartridges streak up toward the iCloud chip,
+    /// which then holds until the real upload resolves.
+    private func playSendFlourish(_ games: [Game], dest: String) {
+        sendFlight = SendFlight(games: Array(games.prefix(3)), dest: dest, result: nil)
     }
 
     /// Delete a game with a matching flourish: the cartridge drops away with a soft power-down cue, then
@@ -484,12 +494,16 @@ struct LibraryView: View {
                 symbol: "icloud.slash", caption: "Handoff"))
             return
         }
-        playSendFlourish([game])
-        let ok = await continuity.offerROM(game: game, targetDevice: target)
         let dest = target ?? "your devices"
-        AppNotifier.shared.post(ok
-            ? .info("Sent to \(dest)", symbol: "iphone.and.arrow.forward", caption: "Handoff")
-            : .info("Couldn’t reach iCloud — try again", symbol: "icloud.slash", caption: "Handoff"))
+        playSendFlourish([game], dest: dest)
+        let ok = await continuity.offerROM(game: game, targetDevice: target)
+        // The flourish's iCloud chip now carries the success confirmation; keep a banner only for the
+        // failure case (it lingers longer / is announced), so the two signals don't double up.
+        await MainActor.run { sendFlight?.result = ok }
+        if !ok {
+            AppNotifier.shared.post(
+                .info("Couldn’t reach iCloud — try again", symbol: "icloud.slash", caption: "Handoff"))
+        }
     }
 
     /// Batch "Send Multiple…": the same ownership consent as the single-game path (asked once, then
@@ -511,14 +525,13 @@ struct LibraryView: View {
                 symbol: "icloud.slash", caption: "Handoff"))
             return
         }
-        playSendFlourish(games)
         let dest = target ?? "your devices"
-        AppNotifier.shared.post(.info(
-            "Sending \(games.count) game\(games.count == 1 ? "" : "s") to \(dest)…",
-            symbol: "iphone.and.arrow.forward", caption: "Handoff"))
+        playSendFlourish(games, dest: dest)
         var sent = 0
         for game in games where await continuity.offerROM(game: game, targetDevice: target) { sent += 1 }
         let ok = sent == games.count
+        // Resolve the flourish (delivered if anything got through); the banner carries the exact count.
+        await MainActor.run { sendFlight?.result = sent > 0 }
         AppNotifier.shared.post(.info(
             ok ? "Sent \(sent) game\(sent == 1 ? "" : "s") to \(dest)"
                : sent == 0 ? "Couldn’t reach iCloud — try again"
@@ -729,19 +742,14 @@ private struct CartShelf: View {
                                 Label("Delete", systemImage: "trash")
                             }
                         }, preview: {
-                            // Long-press lifts the cart as a holographic foil card that catches the
-                            // light with the phone's tilt — inside the glossy Apple-Intelligence box
-                            // that every press menu now shares.
-                            PressMenuBox {
-                                HolographicCartridge(
-                                    system: games[i].system,
-                                    cover: CoverStore.image(at: covers[games[i].romHash]),
-                                    title: games[i].displayTitle,
-                                    systemTag: games[i].system.shortName,
-                                    crop: games[i].coverCrop)
-                                    .frame(width: 240,
-                                           height: 240 / CartridgeView.cartAspect(for: games[i].system))
-                            }
+                            // Long-press lifts a clean Apple TV-style card: the cover art with a gentle
+                            // tilt gloss, the console name and title beneath.
+                            GamePreviewCard(
+                                system: games[i].system,
+                                cover: CoverStore.image(at: covers[games[i].romHash]),
+                                title: games[i].displayTitle,
+                                systemTag: games[i].system.shortName,
+                                crop: games[i].coverCrop)
                         })
                         .onTapGesture {
                             if i == sel {
@@ -847,6 +855,10 @@ private struct ContinueStrip: View {
     /// of recent capsules (rendered at the root so it can spread over the whole shelf with a scrim).
     var onLongPress: () -> Void
 
+    /// True while a finger is down mid-hold: drives the subtle "shrink into the shelf" acknowledgement
+    /// so the user sees the capsule react the instant they press, before the folder opens.
+    @State private var pressing = false
+
     /// Resolve each card to its game (dropping any whose ROM is missing), newest first, capped at 4.
     private var resolved: [(card: ContinuityCard, game: Game)] {
         Array(sessions.compactMap { c in game(c.metadata.romHash).map { (card: c, game: $0) } }.prefix(4))
@@ -873,9 +885,23 @@ private struct ContinueStrip: View {
                             .offset(y: -6)
                             .opacity(0.55)
                     }
+                    // While the finger is held the capsule presses in slightly, so there's a visible
+                    // "something's happening" before the 0.35s hold completes and the folder fans open.
+                    .scaleEffect(pressing ? 0.955 : 1)
+                    .animation(.spring(response: 0.28, dampingFraction: 0.7), value: pressing)
                     // Long-press fans the recent sessions open like a folder — their own capsules, not
-                    // a text menu — so picking up an earlier game is a tap on the real thing.
-                    .onLongPressGesture(minimumDuration: 0.35) { onLongPress() }
+                    // a text menu — so picking up an earlier game is a tap on the real thing. A soft
+                    // haptic on press-down confirms the hold registered, then a firmer thump on release
+                    // marks the moment the folder opens.
+                    .onLongPressGesture(minimumDuration: 0.35) {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        onLongPress()
+                    } onPressingChanged: { isPressing in
+                        pressing = isPressing
+                        if isPressing {
+                            UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.6)
+                        }
+                    }
             } else {
                 capsule
             }
@@ -1041,7 +1067,7 @@ private struct TransferCapsule: View {
                 Spacer(minLength: 4)
                 Image(systemName: transferring ? "arrow.down.circle" : "square.and.arrow.down")
                     .font(.system(size: 15))
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(DS.textSecondary)
                     .symbolEffect(.pulse, isActive: transferring)
                     .padding(.trailing, 12)
             }
@@ -1049,9 +1075,10 @@ private struct TransferCapsule: View {
             .frame(maxWidth: .infinity)
             .frame(height: 54)
             .background(.ultraThinMaterial, in: Capsule())
-            .overlay(Capsule().stroke(Color.blue.opacity(glow ? 0.85 : 0.3), lineWidth: 1))
-            // A slow breathing halo so a waiting transfer quietly draws the eye without nagging.
-            .shadow(color: .blue.opacity(glow ? 0.55 : 0.12), radius: glow ? 14 : 5)
+            // A slow breathing hairline so a waiting transfer quietly draws the eye without nagging —
+            // monochrome, no coloured glow.
+            .overlay(Capsule().stroke(.white.opacity(glow ? 0.5 : 0.16), lineWidth: 1))
+            .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
         }
         .buttonStyle(.plain)
         .disabled(transferring)
@@ -1077,44 +1104,105 @@ private struct TransferCapsule: View {
 private struct SendFlourishView: View {
     let games: [Game]
     let covers: [String: URL]
+    let dest: String
+    /// The live upload result: nil while uploading, then success/failure. Drives the chip's resolve.
+    let result: Bool?
     let onDone: () -> Void
 
     @State private var launched = false
+    @State private var arrived = false          // carts reached the iCloud chip; the chip pops in
+    @State private var minHoldElapsed = false   // the chip has been on screen long enough to resolve
+    @State private var finished = false
+
+    private let cardW: CGFloat = 118
+    private let flightDuration = 0.72
 
     var body: some View {
         GeometryReader { geo in
             let n = min(games.count, 3)
-            let cardW: CGFloat = 118
             let startY = geo.size.height - 150      // near the shelf / send origin
+            // Sit the chip just clear of the nav bar — below the "Library" title, not crowding it.
+            let cloud = CGPoint(x: geo.size.width / 2, y: 150)   // the iCloud chip the carts fly into
             ZStack {
-                // Launch flash — a quick radial bloom at the lift-off point.
+                // Launch flash — a quiet monochrome bloom at the lift-off point (no coloured glow).
                 Circle()
-                    .fill(RadialGradient(colors: [.white.opacity(0.7), .blue.opacity(0.35), .clear],
+                    .fill(RadialGradient(colors: [.white.opacity(0.35), .clear],
                                          center: .center, startRadius: 0, endRadius: 85))
                     .frame(width: 180, height: 180)
                     .scaleEffect(launched ? 1.7 : 0.5)
-                    .opacity(launched ? 0 : 0.9)
+                    .opacity(launched ? 0 : 0.7)
                     .position(x: geo.size.width / 2, y: startY)
                     .animation(.easeOut(duration: 0.4), value: launched)
 
+                // Cartridges streak up and converge into the iCloud chip (shrinking as they "upload").
                 ForEach(Array(games.prefix(3).enumerated()), id: \.element.id) { i, game in
                     let xOff: CGFloat = n == 1 ? 0 : (CGFloat(i) / CGFloat(n - 1) - 0.5) * 84
                     CartCard(game: game, coverURL: covers[game.romHash], width: cardW, isFocused: true)
-                        .shadow(color: .blue.opacity(launched ? 0.65 : 0.25), radius: 16)
-                        .scaleEffect(launched ? 0.9 : 0.72)
+                        .shadow(color: .black.opacity(0.5), radius: 12, y: 6)
+                        .scaleEffect(launched ? 0.3 : 0.72)
                         .opacity(launched ? 0 : 1)
-                        .position(x: geo.size.width / 2 + xOff,
-                                  y: launched ? -cardW : startY)
-                        .animation(.easeIn(duration: 0.8).delay(Double(i) * 0.07), value: launched)
+                        .position(x: launched ? cloud.x : geo.size.width / 2 + xOff,
+                                  y: launched ? cloud.y : startY)
+                        .animation(.easeIn(duration: flightDuration).delay(Double(i) * 0.07), value: launched)
                 }
+
+                cloudChip.position(cloud)
             }
             .ignoresSafeArea()
         }
         .onAppear {
             launched = true
-            let total = 0.8 + Double(max(0, min(games.count, 3) - 1)) * 0.07 + 0.15
-            DispatchQueue.main.asyncAfter(deadline: .now() + total) { onDone() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + flightDuration) {
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.7)) { arrived = true }
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                minHoldElapsed = true
+                maybeFinish()
+            }
+            // Never hang if a result somehow never arrives.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
+                if !finished { finished = true; onDone() }
+            }
         }
+        .onChange(of: result != nil) { _, _ in maybeFinish() }
+    }
+
+    /// The iCloud target the carts fly into: pulses "Sending…" while uploading, then snaps to a ✓ (with
+    /// a soft success haptic) or a "couldn't reach iCloud" slash.
+    private var cloudChip: some View {
+        let icon: String
+        let text: String
+        let tint: Color
+        switch result {
+        case .some(true):  icon = "checkmark.circle.fill";   text = "Sent to \(dest)";       tint = DS.textPrimary
+        case .some(false): icon = "icloud.slash";            text = "Couldn’t reach iCloud"; tint = DS.textSecondary
+        case .none:        icon = "icloud.and.arrow.up.fill"; text = "Sending to \(dest)…";   tint = DS.textSecondary
+        }
+        return HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tint)
+                .symbolEffect(.pulse, isActive: result == nil)
+                .contentTransition(.symbolEffect(.replace))
+            Text(text)
+                .font(DS.mono(12, .semibold))
+                .foregroundStyle(DS.textPrimary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(.white.opacity(0.14), lineWidth: 1))
+        .shadow(color: .black.opacity(0.4), radius: arrived ? 8 : 0, y: 3)
+        .scaleEffect(arrived ? 1 : 0.6)
+        .opacity(arrived ? 1 : 0)
+        .animation(.spring(response: 0.4, dampingFraction: 0.72), value: arrived)
+        .animation(.easeInOut(duration: 0.28), value: result)
+    }
+
+    private func maybeFinish() {
+        guard !finished, minHoldElapsed, result != nil else { return }
+        finished = true
+        if result == true { UINotificationFeedbackGenerator().notificationOccurred(.success) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { onDone() }   // let the ✓/✗ read for a beat
     }
 }
 
@@ -1188,7 +1276,7 @@ private struct TransferArrivalOverlay: View {
                     .position(restCenter)
                     .opacity(leaving ? 0 : 1)
 
-                RadialGradient(colors: [Color.blue.opacity(0.5), .clear],
+                RadialGradient(colors: [Color.white.opacity(0.16), .clear],
                                center: .center, startRadius: 2, endRadius: 240)
                     .frame(width: 480, height: 480)
                     .scaleEffect(landed ? 1 : 0.2)
@@ -1199,14 +1287,14 @@ private struct TransferArrivalOverlay: View {
                 CartridgeView(system: system, cover: cover, title: title,
                               systemTag: system.shortName)
                     .frame(width: cartW, height: cartH)
-                    .shadow(color: .blue.opacity(0.55), radius: landed && !leaving ? 34 : 6, y: 12)
+                    .shadow(color: .black.opacity(0.6), radius: landed && !leaving ? 24 : 6, y: 12)
                     .rotationEffect(.degrees(landed ? 0 : -8))
                     .scaleEffect(cartScale)
                     .position(cartCenter)
 
                 VStack(spacing: 5) {
                     Text("RECEIVED").font(DS.mono(11, .semibold)).tracking(3)
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(DS.textSecondary)
                     Text(title).font(DS.mono(16, .bold))
                         .foregroundStyle(DS.textPrimary)
                         .multilineTextAlignment(.center).lineLimit(2)
@@ -1265,7 +1353,7 @@ private struct RadarWaves: View {
         ZStack {
             ForEach(0..<rings, id: \.self) { i in
                 Circle()
-                    .stroke(Color.blue.opacity(0.55), lineWidth: 2.5)
+                    .stroke(Color.white.opacity(0.35), lineWidth: 2)
                     .scaleEffect(go ? 2.9 : 0.18)
                     .opacity(go ? 0 : 0.8)
                     .animation(active
