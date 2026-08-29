@@ -186,9 +186,19 @@ struct SaveStatesSheet: View {
                 }
             }
         }
-        .accessibilityLabel(slot.exists
-            ? "Slot \(slot.index), \(status(slot)). Double-tap to load."
-            : "Slot \(slot.index), empty. Double-tap to save.")
+        // Announce the action a tap will *actually* perform in the current mode — otherwise Save mode
+        // would tell VoiceOver users a tap "loads" while it silently overwrites the slot.
+        .accessibilityLabel(accessibilityLabel(for: slot))
+    }
+
+    private func accessibilityLabel(for slot: SaveSlot) -> String {
+        let base = slot.exists ? "Slot \(slot.index), \(status(slot))" : "Slot \(slot.index), empty"
+        switch mode {
+        case .save:
+            return base + (slot.exists ? ". Double-tap to overwrite." : ". Double-tap to save.")
+        case .load:
+            return slot.exists ? base + ". Double-tap to load." : base + ". No save to load."
+        }
     }
 
     @ViewBuilder

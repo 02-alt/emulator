@@ -115,6 +115,8 @@ struct GBACartridgeView: View {
                 // as the Mac's `fillLabel`. Drawn as a real view so the crop + rounding are exact.
                 if let cover {
                     coverArt(cover, win: win, radius: bw * 0.03)
+                        // Holographic foil laminated onto the art, then the clear glass pane on top.
+                        .overlay { foilOverlay(cover: cover, win: win, radius: bw * 0.03) }
                         .overlay { glassOverlay(radius: bw * 0.03) }   // clear Liquid Glass pane (iOS 26+)
                         .compositingGroup()
                         // Hard-clip so the glass never spills past the cover at full tilt.
@@ -378,6 +380,8 @@ struct GBCCartridgeView: View {
                 }
                 if let cover {
                     coverArt(cover, win: win, radius: bw * 0.03)
+                        // Holographic foil laminated onto the art, then the clear glass pane on top.
+                        .overlay { foilOverlay(cover: cover, win: win, radius: bw * 0.03) }
                         .overlay { glassOverlay(radius: bw * 0.03) }   // clear Liquid Glass pane (iOS 26+)
                         .compositingGroup()
                         // Hard-clip so the glass never spills past the cover at full tilt.

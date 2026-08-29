@@ -175,8 +175,16 @@ struct GameView: View {
             }
         }
         .onDisappear {
-            publishContinuity()
-            session.stop()
+            // Clear the pad callbacks first: they capture this view (→ session, audio, framebuffers),
+            // so leaving them set retains the whole EmulationSession past teardown (a per-close leak).
+            pad.onChange = nil
+            pad.onMenu = nil
+            publishContinuity()   // enqueues the final snapshot (non-blocking) before the loop drains
+            // stop() blocks until the emulation thread finishes its frame + battery flush (up to 2s if
+            // the core wedges). Run it off the main actor so quitting a game never janks the UI. The
+            // captured `session` keeps the object alive until teardown completes.
+            let session = self.session
+            Task.detached { session.stop() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {

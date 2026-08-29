@@ -73,11 +73,11 @@ struct LibraryView: View {
     /// overlay then morphs into its real shelf slot (until then it holds, radar-waving).
     @State private var arrivalReady = false
 
-    // Every ROM extension we import, across all supported systems (GBA + Game Boy / Color), as UTTypes
-    // for the Files picker. `.data` stays in the list too, so a ROM Files reports as plain data is
-    // still selectable; `handleImport` filters on the real extension.
+    // Every ROM extension iOS can actually *play* (GBA + Game Boy / Color), as UTTypes for the Files
+    // picker. PS1 disc extensions are deliberately excluded — the shared enum carries `.ps1`, but this
+    // build has no PlayStation core, so offering to import one would only produce an unplayable game.
     private static let romTypes: [UTType] =
-        ROMImporter.supportedExtensions.compactMap { UTType(filenameExtension: $0) }
+        GameSystem.iosPlayableExtensions.compactMap { UTType(filenameExtension: $0) }
 
     var body: some View {
         ZStack {
@@ -543,6 +543,12 @@ struct LibraryView: View {
         switch result {
         case .success(let urls):
             for url in urls {
+                // Defence-in-depth against the picker or a Continuity hand-off surfacing a disc image:
+                // iOS can't run PS1, so skip anything that isn't a GBA / Game Boy ROM.
+                guard GameSystem.isPlayableOnIOS(extension: url.pathExtension) else {
+                    importError = "\(url.lastPathComponent) isn’t a Game Boy / GBA game — this app can’t play it."
+                    continue
+                }
                 do { try library.importROM(from: url) }
                 catch { importError = error.localizedDescription }
             }

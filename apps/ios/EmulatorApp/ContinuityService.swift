@@ -241,6 +241,10 @@ final class ContinuityService {
         var seenHash = Set<String>()
         var seenTitle = Set<String>()
         pendingTransfers = offers.compactMap { offer -> (card: ContinuityCard, fileName: String)? in
+            // Drop offers this device can't play (e.g. a PS1 disc sent from the Mac) — iOS has no
+            // PlayStation core, so accepting one would only land an unplayable game on the phone.
+            guard GameSystem.isPlayableOnIOS(extension: (offer.fileName as NSString).pathExtension)
+            else { return nil }
             guard !ownedHashes.contains(offer.romHash) else { return nil }
             guard !dismissedTransfers.contains(transferKey(offer.romHash, offer.timestamp)) else { return nil }
             let title = (offer.fileName as NSString).deletingPathExtension
