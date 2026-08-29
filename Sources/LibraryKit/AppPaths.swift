@@ -18,6 +18,13 @@ public enum AppPaths {
     public static var snapsDir: URL { subdir("snaps") }
     public static var screenshotsDir: URL { subdir("screenshots") }
 
+    /// PlayStation "system" directory — where the user's console BIOS (scph*.bin) lives. The PS1
+    /// core reads the BIOS from here at load time (it isn't handed over through a call). One-time
+    /// onboarding drops a validated image in; it's never asked for again.
+    public static var psxSystemDir: URL { subdir("psx-system") }
+    /// Where the PS1 core writes memory-card / save files.
+    public static var psxSavesDir: URL { subdir("psx-saves") }
+
     private static func subdir(_ name: String) -> URL {
         let url = appSupport.appendingPathComponent(name, isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

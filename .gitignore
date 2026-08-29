@@ -7,6 +7,9 @@ Package.resolved
 *.xcodeproj/xcuserdata/
 *.xcodeproj/project.xcworkspace/
 *.xcworkspace/xcuserdata/
+# Per-user Xcode state, wherever it's nested (window layout, scheme mgmt, breakpoints)
+**/xcuserdata/
+*.xcuserstate
 DerivedData/
 # iOS app build output (xcodebuild -derivedDataPath)
 apps/ios/build/

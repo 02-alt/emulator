@@ -13,7 +13,7 @@ final class FilterDrawer: NSView {
     /// Chosen index — 0 = All Games, 1 = Hidden.
     var onSelect: ((Int) -> Void)?
 
-    private let titles: [String]
+    private var titles: [String]
     private var selectedIndex: Int
 
     private var isOpen = false
@@ -47,13 +47,28 @@ final class FilterDrawer: NSView {
         self.selectedIndex = selected
         super.init(frame: .zero)
         wantsLayer = true
-        segWidths = titles.map { (DS.Text.label($0, size: 13).size().width + DS.Space.md).rounded() }
-        segTotalW = segWidths.reduce(0, +)
+        measureSegments()
         progress.onChange = { [weak self] _ in self?.needsDisplay = true }
         handleReveal.onChange = { [weak self] _ in self?.needsDisplay = true }
         hintAlpha.onChange = { [weak self] _ in self?.needsDisplay = true }
     }
     required init?(coder: NSCoder) { fatalError("not implemented") }
+
+    private func measureSegments() {
+        segWidths = titles.map { (DS.Text.label($0, size: 13).size().width + DS.Space.md).rounded() }
+        segTotalW = segWidths.reduce(0, +)
+    }
+
+    /// Replace the segment options (e.g. the set of console filters changed as games were added/removed).
+    /// `selected` is clamped to the new range. Widths change with the titles, so the owner should
+    /// re-lay the drawer after calling this.
+    func setOptions(_ titles: [String], selected: Int) {
+        guard titles != self.titles || selected != selectedIndex else { return }
+        self.titles = titles
+        selectedIndex = min(max(0, selected), max(0, titles.count - 1))
+        measureSegments()
+        needsDisplay = true
+    }
 
     override var isFlipped: Bool { true }
 

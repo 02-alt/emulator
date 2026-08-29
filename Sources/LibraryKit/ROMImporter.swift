@@ -2,8 +2,9 @@ import Foundation
 
 /// Turns a ROM file on disk into a `Game`: hashes it for identity and derives a clean title.
 public enum ROMImporter {
-    /// GBA cartridges.
-    public static let supportedExtensions: Set<String> = ["gba"]
+    /// Every ROM extension we can import, across all supported systems (GBA, Game Boy / Color).
+    public static let supportedExtensions: Set<String> =
+        Set(GameSystem.allCases.flatMap { $0.fileExtensions })
 
     public static func isSupported(_ url: URL) -> Bool {
         supportedExtensions.contains(url.pathExtension.lowercased())
@@ -20,9 +21,24 @@ public enum ROMImporter {
             slotIndex: slotIndex)
     }
 
-    /// Identity hash. GBA carts are small, so hash the whole file.
+    /// Files at or above this size are hashed by a bounded prefix + size rather than in full, so a
+    /// multi-hundred-MB PS1 disc image isn't read entirely into memory just to get an identity.
+    private static let boundedHashThreshold = 32 * 1024 * 1024   // 32 MB
+    private static let boundedHashPrefix    = 8 * 1024 * 1024     // first 8 MB
+
+    /// Identity hash. Small carts (GBA/GB) are hashed whole; large disc images (PS1 .chd/.bin) are
+    /// hashed by their first 8 MB combined with their exact byte size — stable per file, cheap to
+    /// compute, and collision-safe enough for library identity.
     private static func identityHash(for url: URL) throws -> String {
-        try Data(contentsOf: url).sha256Hex(prefix: 16)
+        let size = (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        if size < boundedHashThreshold {
+            return try Data(contentsOf: url).sha256Hex(prefix: 16)
+        }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var data = (try handle.read(upToCount: boundedHashPrefix)) ?? Data()
+        withUnsafeBytes(of: UInt64(size).littleEndian) { data.append(contentsOf: $0) }
+        return data.sha256Hex(prefix: 16)
     }
 
     /// "Pokemon - Emerald Version (USA, Europe)" → "Pokemon - Emerald Version".

@@ -359,7 +359,7 @@ private final class BootScreenView: NSView {
 
     /// Load the bundled clip. Returns false (so the caller can skip the boot) if it's missing.
     func load() -> Bool {
-        guard let url = Bundle.module.url(forResource: "gba-boot", withExtension: "mp4") else {
+        guard let url = Bundle.moduleResources?.url(forResource: "gba-boot", withExtension: "mp4") else {
             NSLog("LaunchCinematic: missing gba-boot.mp4"); return false
         }
         let item = AVPlayerItem(url: url)

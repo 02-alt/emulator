@@ -12,6 +12,10 @@ final class GameControllerManager: @unchecked Sendable {
     /// resting/drifting stick from firing directions.
     private static let stickDeadzone: Float = 0.5
 
+    /// Convert a GameController axis (−1…1, +Y = up) to the pad's Int16 range (−32768…32767),
+    /// keeping the +Y-is-up convention `PadInput` uses.
+    private static func axis(_ v: Float) -> Int16 { Int16(clamping: Int((v * 32767).rounded())) }
+
     /// Cached ``Settings/joystickAsDpad`` so the (non-actor-isolated) value handler can read it
     /// without hopping to the main actor. Refreshed on ``Settings/didChange``.
     private var joystickAsDpad = true
@@ -79,8 +83,11 @@ final class GameControllerManager: @unchecked Sendable {
             let up = gamepad.dpad.up.isPressed, down = gamepad.dpad.down.isPressed
             let left = gamepad.dpad.left.isPressed, right = gamepad.dpad.right.isPressed
             let a = gamepad.buttonA.isPressed, bb = gamepad.buttonB.isPressed
+            let bx = gamepad.buttonX.isPressed, by = gamepad.buttonY.isPressed
             let lsh = gamepad.leftShoulder.isPressed, rsh = gamepad.rightShoulder.isPressed
+            let lt = gamepad.leftTrigger.isPressed, rt = gamepad.rightTrigger.isPressed
             let sx = gamepad.leftThumbstick.xAxis.value, sy = gamepad.leftThumbstick.yAxis.value
+            let rx = gamepad.rightThumbstick.xAxis.value, ry = gamepad.rightThumbstick.yAxis.value
             let menu = gamepad.buttonMenu.isPressed
             let options = gamepad.buttonOptions?.isPressed ?? false
 
@@ -99,11 +106,19 @@ final class GameControllerManager: @unchecked Sendable {
                     if a && !self.prevA { self.onGuideActivate?() }
                     if bb && !self.prevB { self.onGuideClose?() }
                 } else {
-                    var b: GBAButtons = []
-                    if a { b.insert(.a) }                 // cross / A
-                    if bb { b.insert(.b) }                // circle / B
-                    if lsh { b.insert(.l) }
-                    if rsh { b.insert(.r) }
+                    // Position-based face mapping (bottom/right/left/top), so PS1 shapes line up:
+                    // A→✕ south, B→○ east, X→▢ west, Y→△ north. GBA cores keep only south/east.
+                    var b: PadButtons = []
+                    if a { b.insert(.south) }
+                    if bb { b.insert(.east) }
+                    if bx { b.insert(.west) }
+                    if by { b.insert(.north) }
+                    if lsh { b.insert(.l1) }
+                    if rsh { b.insert(.r1) }
+                    if lt { b.insert(.l2) }
+                    if rt { b.insert(.r2) }
+                    if l3 { b.insert(.l3) }
+                    if r3 { b.insert(.r3) }
                     if up { b.insert(.up) }
                     if down { b.insert(.down) }
                     if left { b.insert(.left) }
@@ -118,7 +133,9 @@ final class GameControllerManager: @unchecked Sendable {
                     }
                     if menu { b.insert(.start) }
                     if options { b.insert(.select) }
-                    self.driver.setPad(b)
+                    self.driver.setPad(b,
+                                       leftX: Self.axis(sx), leftY: Self.axis(sy),
+                                       rightX: Self.axis(rx), rightY: Self.axis(ry))
                 }
 
                 self.prevHome = home; self.prevCombo = combo
