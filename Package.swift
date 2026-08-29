@@ -11,10 +11,16 @@ let package = Package(
     products: [
         .library(name: "EmulatorCore", targets: ["EmulatorCore"]),
         .library(name: "GBACore", targets: ["GBACore"]),
+        .library(name: "PSXCore", targets: ["PSXCore"]),
         .library(name: "LibraryKit", targets: ["LibraryKit"]),
         .library(name: "ContinuityKit", targets: ["ContinuityKit"]),
         .executable(name: "emu-boot", targets: ["emu-boot"]),
         .executable(name: "emu-window", targets: ["emu-window"]),
+    ],
+    dependencies: [
+        // In-app auto-update (macOS only): downloads + installs new releases in place, no browser.
+        // Sparkle ships as a binary xcframework via SwiftPM; release.sh embeds + signs it in the bundle.
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
     ],
     targets: [
         // Core-agnostic contract every emulator core conforms to, plus a mock GBA
@@ -49,6 +55,19 @@ let package = Package(
         // Real GBA core: EmulatorCore implemented on libmgba via MGBABridge.
         .target(name: "GBACore", dependencies: ["EmulatorCore", "MGBABridge"]),
 
+        // Generic libretro host: dlopen's any libretro core dylib and drives it through the six
+        // libretro callbacks. Only needs the vendored libretro.h at compile time; the core itself
+        // is loaded at runtime (no build-time link), so no core needs to exist to build this.
+        .target(
+            name: "LibretroBridge",
+            cSettings: [
+                .unsafeFlags(["-Ivendor/beetle-psx-libretro/libretro-common/include"]),
+            ]
+        ),
+
+        // Real PS1 core: EmulatorCore implemented on the Beetle PSX libretro core via LibretroBridge.
+        .target(name: "PSXCore", dependencies: ["EmulatorCore", "LibretroBridge"]),
+
         // Library model + persistence + ROM import + box-art fetching (no AppKit).
         .target(
             name: "LibraryKit",
@@ -63,14 +82,23 @@ let package = Package(
         // Headless "does it boot and run frames" runner (Milestone M1).
         .executableTarget(
             name: "emu-boot",
-            dependencies: ["EmulatorCore", "GBACore"]
+            dependencies: ["EmulatorCore", "GBACore", "PSXCore"]
         ),
 
         // Live Metal window + flat "Analogue OS" library + glass play UI. AppKit + MetalKit (macOS).
         .executableTarget(
             name: "emu-window",
-            dependencies: ["EmulatorCore", "GBACore", "LibraryKit"],
-            resources: [.process("Resources")]   // bundled Departure Mono pixel font (SIL OFL)
+            dependencies: [
+                "EmulatorCore", "GBACore", "PSXCore", "LibraryKit", "ContinuityKit",
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
+            resources: [.process("Resources")],   // bundled Departure Mono pixel font (SIL OFL)
+            linkerSettings: [
+                // The assembled .app carries Sparkle.framework in Contents/Frameworks; teach the
+                // executable to find it there at runtime (SwiftPM's dev rpath points at .build only).
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"],
+                             .when(platforms: [.macOS])),
+            ]
         ),
 
         .testTarget(

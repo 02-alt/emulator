@@ -3,12 +3,13 @@ import EmulatorCore
 import GBACore
 import LibraryKit
 
-/// Builds the emulator core for a library game. Uses the real libmgba-backed `GBACore`; if the ROM
-/// can't be loaded (missing file, bad dump) it falls back to the ROM-free `MockGBACore` so the
-/// play screen still comes up rather than crashing.
+/// Builds the emulator core for a library game. Uses the real libmgba-backed cores — `GBACore` for
+/// Game Boy Advance carts, `GBCore` for Game Boy / Game Boy Color — picked from the game's system.
+/// If the ROM can't be loaded (missing file, bad dump) it falls back to the ROM-free `MockGBACore`
+/// so the play screen still comes up rather than crashing.
 enum CoreProvider {
     static func core(for game: Game) -> (core: EmulatorCore, isReal: Bool) {
-        let core = GBACore()
+        let core: EmulatorCore = game.system == .gbc ? GBCore() : GBACore()
         do {
             try core.loadROM(at: resolvedROMURL(for: game))   // GBA runs BIOS-less (slightly less accurate)
             return (core, true)

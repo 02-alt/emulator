@@ -1,6 +1,7 @@
 import Foundation
 import UIKit
 import EmulatorCore
+import Synchronization
 
 /// Drives an `EmulatorCore` on a dedicated high-priority thread at the system's refresh rate. It is
 /// the single owner of the core (which is not `Sendable`): every core touch happens on the emulation
@@ -23,12 +24,19 @@ final class EmulationSession: @unchecked Sendable {
     private let frameLock = NSLock()
 
     private var buttons = GBAButtons()
+    private var luminance: UInt8 = 0        // solar-sensor light level, applied each frame (Boktai et al.)
     private let buttonLock = NSLock()
+
+    /// Whether this game's cartridge has a solar sensor (drives the on-screen "light" button). Read
+    /// once at init — the core already has its ROM loaded — so the UI can query it without touching
+    /// the core off the emulation thread.
+    let hasLightSensor: Bool
 
     // Playback state (speed multiplier + pause + rewind), read each iteration by the loop.
     private var speed = 1.0
     private var paused = false
     private var rewinding = false
+    private var rewindEnabled = AppSettings.rewindEnabled   // off = capture no history (saves CPU/memory)
     private let stateLock = NSLock()
 
     // Rewind ring: periodic savestates (emulation-thread-only, so no lock needed). Holding rewind
@@ -49,12 +57,16 @@ final class EmulationSession: @unchecked Sendable {
     private var commands: [(EmulatorCore) -> Void] = []
     private let commandLock = NSLock()
 
-    private var thread: Thread?
-    private var running = false
+    private var thread: Thread?            // main-thread-only (start/stop)
+    // Written on main (start/stop), read every frame on the emulation thread — atomic so the loop's
+    // `running` read is a well-defined cross-thread flag rather than a data race on a plain Bool.
+    private let running = Atomic<Bool>(false)
+    private let didStop = DispatchSemaphore(value: 0)   // signaled once the loop has fully exited
 
     init(core: EmulatorCore, saveDirectory: URL? = nil) {
         self.core = core
         self.saveDirectory = saveDirectory
+        self.hasLightSensor = core.hasLightSensor
         (self.width, self.height) = core.videoSize
         self.refreshRate = type(of: core).system.refreshRate
         let count = width * height
@@ -76,6 +88,11 @@ final class EmulationSession: @unchecked Sendable {
         buttonLock.lock(); buttons = b; buttonLock.unlock()
     }
 
+    /// Set the solar-sensor light level (0 = dark … 255 = full sun). Applied before each frame.
+    func setLuminance(_ value: UInt8) {
+        buttonLock.lock(); luminance = value; buttonLock.unlock()
+    }
+
     // MARK: - Playback
 
     /// Emulation speed multiplier (1 = real time). >1 fast-forwards; audio is muted while sped up
@@ -91,6 +108,13 @@ final class EmulationSession: @unchecked Sendable {
     /// Hold to rewind: while true, the loop replays buffered states backward instead of advancing.
     func setRewinding(_ value: Bool) {
         stateLock.lock(); rewinding = value; stateLock.unlock()
+    }
+
+    /// Toggle rewind capture. When off, no history is recorded (and the existing ring is dropped), so
+    /// a player who never rewinds pays nothing for it.
+    func setRewindEnabled(_ value: Bool) {
+        stateLock.lock(); rewindEnabled = value; stateLock.unlock()
+        if !value { enqueue { [weak self] _ in self?.rewindRing.removeAll(keepingCapacity: false) } }
     }
 
     /// Live master volume (0…1), applied to the audio engine immediately.
@@ -120,7 +144,7 @@ final class EmulationSession: @unchecked Sendable {
         }
         audio.start()
         audio.setVolume(AppSettings.masterVolume)
-        running = true
+        running.store(true, ordering: .sequentiallyConsistent)
         let t = Thread { [weak self] in self?.loop() }
         t.name = "emulation"
         t.qualityOfService = .userInteractive
@@ -129,8 +153,14 @@ final class EmulationSession: @unchecked Sendable {
     }
 
     func stop() {
+        guard thread != nil else { return }
         persistBattery()          // queue a final battery flush before the loop exits
-        running = false
+        running.store(false, ordering: .sequentiallyConsistent)
+        // Wait for the emulation thread to finish its current frame AND its final battery flush
+        // before returning: otherwise the next session could start reading a half-written save, and
+        // the core could be touched after teardown (use-after-free). Bounded — the loop re-checks
+        // `running` every frame — with a 2s safety cap in case the core ever wedges.
+        _ = didStop.wait(timeout: .now() + 2)
         thread = nil
         audio.stop()
     }
@@ -186,6 +216,33 @@ final class EmulationSession: @unchecked Sendable {
         return FileManager.default.fileExists(atPath: url.path)
     }
 
+    // MARK: - Numbered save slots (multi-save, like the macOS "Save States" panel)
+
+    /// Write a full save state to an explicit slot file, plus a PNG thumbnail of the current frame
+    /// alongside it (so the slots panel can show a preview). `completion` runs on the main thread.
+    func saveState(toSlotStateURL stateURL: URL, thumbURL: URL,
+                   completion: @escaping (Bool) -> Void) {
+        let thumb = latestFramePNG()
+        enqueue { core in
+            let ok: Bool
+            do { try core.saveState().write(to: stateURL, options: .atomic); ok = true }
+            catch { ok = false }
+            if ok, let thumb { try? thumb.write(to: thumbURL, options: .atomic) }
+            DispatchQueue.main.async { completion(ok) }
+        }
+    }
+
+    /// Restore a full save state from an explicit slot file.
+    func loadState(fromSlotStateURL url: URL, completion: @escaping (Bool) -> Void) {
+        guard let data = try? Data(contentsOf: url) else { completion(false); return }
+        enqueue { [weak self] core in
+            let ok: Bool
+            do { try core.loadState(data); ok = true; self?.rewindRing.removeAll(keepingCapacity: true) }
+            catch { ok = false }
+            DispatchQueue.main.async { completion(ok) }
+        }
+    }
+
     // MARK: - Continuity snapshot
 
     /// Capture a full save state plus a PNG of the latest frame, for cross-device "continue where you
@@ -210,7 +267,10 @@ final class EmulationSession: @unchecked Sendable {
                     data: base, width: w, height: h,
                     bitsPerComponent: 8, bytesPerRow: w * 4,
                     space: CGColorSpaceCreateDeviceRGB(),
-                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+                    // The core leaves the alpha byte at 0x00 (the Metal shader forces output alpha to 1,
+                    // so the live picture is fine). Treat the frame as opaque RGBX here — using
+                    // premultipliedLast instead makes every pixel fully transparent → a black thumbnail.
+                    bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue),
                   let cg = ctx.makeImage()
             else { return nil }
             return UIImage(cgImage: cg).pngData()
@@ -227,6 +287,7 @@ final class EmulationSession: @unchecked Sendable {
     // MARK: - Loop
 
     private func loop() {
+        defer { didStop.signal() }   // let stop() know the thread has fully exited (after the flush below)
         let baseInterval = 1.0 / refreshRate
         // Audio-master targets (in Int16 ring slots; a stereo frame = 2 slots). Keep ~4 video frames
         // of audio buffered; nudge the frame deadline to hold that fill so emulation tracks the audio
@@ -234,17 +295,20 @@ final class EmulationSession: @unchecked Sendable {
         let slotsPerFrame = Double(audioSampleRate) / refreshRate * 2
         let targetSlots = slotsPerFrame * 4
         var next = Date().timeIntervalSinceReferenceDate
-        while running {
+        while running.load(ordering: .sequentiallyConsistent) {
             drainCommands()
 
             stateLock.lock()
-            let speed = self.speed; let paused = self.paused; let rewinding = self.rewinding
+            let speed = self.speed; let paused = self.paused
+            let rewinding = self.rewinding; let rewindEnabled = self.rewindEnabled
             stateLock.unlock()
 
             if paused {
                 // hold on the last frame
             } else if rewinding {
-                if let state = rewindRing.popLast() {
+                // Replay recent snapshots backward (muted). If capture is disabled or history is
+                // exhausted, hold on the current frame rather than advancing forward.
+                if rewindEnabled, let state = rewindRing.popLast() {
                     try? core.loadState(state)
                     core.runFrame()
                     back.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!) }
@@ -252,8 +316,9 @@ final class EmulationSession: @unchecked Sendable {
                     drainAudio(mute: true)   // muted while scrubbing backward
                 }
             } else {
-                buttonLock.lock(); let held = buttons; buttonLock.unlock()
+                buttonLock.lock(); let held = buttons; let lux = luminance; buttonLock.unlock()
                 core.setButtons(held)
+                if hasLightSensor { core.setLuminance(lux) }
                 core.runFrame()
 
                 back.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!) }
@@ -263,7 +328,7 @@ final class EmulationSession: @unchecked Sendable {
                 // feed the ring at real time — muting while fast-forwarded.
                 drainAudio(mute: speed > 1.0)
 
-                captureRewindStateIfNeeded()
+                if rewindEnabled { captureRewindStateIfNeeded() }
             }
 
             if !paused && !rewinding && speed == 1.0 {

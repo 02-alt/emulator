@@ -14,6 +14,14 @@ final class PlayVoidView: NSView, NSPopoverDelegate {
     var onExit: (() -> Void)?           // back + Esc → the shelf
     var onTogglePiP: (() -> Void)?      // pip button → float a mini game window
 
+    // Save-states browser (the Load toolbar button opens it; F5/F9 stay quick save/load of slot 0).
+    var provideSlots: ((Int) -> [SaveSlot])?
+    var onSlotSave: ((Int) -> Void)?
+    var onSlotLoad: ((Int) -> Void)?
+    var onSlotDelete: ((Int) -> Void)?
+    private var statesPopover: NSPopover?
+    private let stateSlotCount = 6
+
     /// The soft player background — exposed so the host window's titlebar can blend with it.
     static let backgroundTop = NSColor(calibratedRed: 0.20, green: 0.20, blue: 0.21, alpha: 1)
     static let backgroundBottom = NSColor(calibratedRed: 0.11, green: 0.11, blue: 0.12, alpha: 1)
@@ -46,6 +54,19 @@ final class PlayVoidView: NSView, NSPopoverDelegate {
     // Bottom glass toolbar
     private var toolbarGlass: NSView!
     private var saveBtn, loadBtn, speedBtn, shotBtn, padToggleBtn, ambienceBtn, settingsBtn: PlayerIconButton!
+    /// Solar-sensor toggle (Boktai / Lunar Knights). Present only when the cart has a light sensor;
+    /// installed after build via ``installLightControl()``.
+    private var lightBtn: PlayerIconButton?
+    /// Fired when the player taps the light toggle; the session flips the luminance and calls back
+    /// ``setLightState(on:)`` to update the icon.
+    var onToggleLight: (() -> Void)?
+    /// Disc-swap control for multi-disc PS1 games. Present only when there's more than one disc;
+    /// installed after build via ``installDiscControl(count:)``.
+    private var discBtn: PlayerIconButton?
+    private var discCount = 0
+    private var currentDisc = 0
+    /// Fired with the new disc index when the player swaps discs.
+    var onSwapDisc: ((Int) -> Void)?
     private let sep1 = PlayVoidView.makeSeparator()
     private let sep2 = PlayVoidView.makeSeparator()
 
@@ -64,6 +85,11 @@ final class PlayVoidView: NSView, NSPopoverDelegate {
 
     /// A caption that pops up next to the hovered button to explain it.
     private let hint = HintBadge()
+
+    /// The optional performance HUD (FPS · speed · draw rate), pinned to a corner. Hidden unless the
+    /// player turns it on in Settings; `PlaySession` samples the driver/renderer and pushes values in.
+    private let statsBadge = StatsBadge()
+    private var statsCorner: Settings.StatsCorner = .topLeft
 
     init(title: String, metalView: EmulatorMetalView) {
         self.metalView = metalView
@@ -92,6 +118,9 @@ final class PlayVoidView: NSView, NSPopoverDelegate {
         buildCorners()
         buildToolbar()
         buildPad()
+
+        statsBadge.isHidden = true
+        addSubview(statsBadge)
 
         hint.isHidden = true
         addSubview(hint)   // on top of everything
@@ -208,8 +237,7 @@ final class PlayVoidView: NSView, NSPopoverDelegate {
         // Uniform, bare icons — save/load state · a speed toggle · capture/controls/settings.
         saveBtn = barButton("tray.and.arrow.down.fill", "Save State (F5)") { [weak self] in self?.metalView.onSave?() }
         saveBtn.setImage(floppyDiskImage(pointSize: 15, arrow: .down))   // floppy, arrow = save/write
-        loadBtn = barButton("tray.and.arrow.up.fill", "Load State (F9)") { [weak self] in self?.metalView.onLoad?() }
-        loadBtn.setImage(floppyDiskImage(pointSize: 15, arrow: .up))   // matched floppy, arrow = load/read
+        loadBtn = barButton("square.stack.3d.up.fill", "Save States") { [weak self] in self?.toggleStatesPanel() }
         speedBtn = PlayerIconButton(symbol: "", tooltip: "Playback Speed", style: .bare, diameter: 44,
                                     behavior: .tap { [weak self] in self?.cycleSpeed() })
         speedBtn.setTitle("1×")
@@ -227,6 +255,68 @@ final class PlayVoidView: NSView, NSPopoverDelegate {
 
     private func barButton(_ symbol: String, _ tip: String, _ run: @escaping () -> Void) -> PlayerIconButton {
         PlayerIconButton(symbol: symbol, tooltip: tip, style: .bare, diameter: 32, behavior: .tap(run))
+    }
+
+    /// Add the solar-sensor "Light" toggle to the toolbar. Called by the session only for carts with a
+    /// light sensor. The icon shows the action: a sun while dark (tap to bring sunlight), a moon while
+    /// lit (tap to go dark).
+    func installLightControl() {
+        guard lightBtn == nil else { return }
+        let btn = barButton("sun.max.fill", "Light: off — tap for sunlight (L)") { [weak self] in
+            self?.onToggleLight?()
+        }
+        btn.onHoverChanged = { [weak self] button, entered in self?.showHint(entered ? button : nil) }
+        addSubview(btn)
+        lightBtn = btn
+        needsLayout = true
+    }
+
+    /// Add the disc-swap button for a multi-disc game (`count` ≥ 2). Tapping cycles to the next disc.
+    func installDiscControl(count: Int) {
+        guard discBtn == nil, count > 1 else { return }
+        discCount = count
+        let btn = barButton("opticaldisc", "Disc 1 of \(count) — tap to swap") { [weak self] in
+            self?.cycleDisc()
+        }
+        btn.onHoverChanged = { [weak self] button, entered in self?.showHint(entered ? button : nil) }
+        addSubview(btn)
+        discBtn = btn
+        needsLayout = true
+    }
+
+    private func cycleDisc() {
+        guard discCount > 1 else { return }
+        currentDisc = (currentDisc + 1) % discCount
+        onSwapDisc?(currentDisc)
+        discBtn?.toolTip = "Disc \(currentDisc + 1) of \(discCount) — tap to swap"
+        Toast.show(in: window, "Disc \(currentDisc + 1) of \(discCount)", style: .info)
+    }
+
+    /// Reflect the latched solar-sensor state on the toolbar button.
+    func setLightState(on: Bool) {
+        lightBtn?.setSymbol(on ? "moon.fill" : "sun.max.fill")
+        lightBtn?.toolTip = on ? "Light: on — tap for darkness (L)" : "Light: off — tap for sunlight (L)"
+    }
+
+    /// Open (or close) the Save States browser popover, anchored to the toolbar's states button.
+    private func toggleStatesPanel() {
+        if let p = statesPopover, p.isShown { p.performClose(nil); return }
+        let panel = SaveStatesPanelView(count: stateSlotCount)
+        panel.slotsProvider = { [weak self] in
+            guard let self else { return [] }
+            return self.provideSlots?(self.stateSlotCount) ?? []
+        }
+        panel.onSave = { [weak self] n in self?.onSlotSave?(n) }
+        panel.onLoad = { [weak self] n in self?.onSlotLoad?(n); self?.statesPopover?.performClose(nil) }
+        panel.onDelete = { [weak self] n in self?.onSlotDelete?(n) }
+        panel.reload()
+        let vc = NSViewController(); vc.view = panel; vc.preferredContentSize = panel.frame.size
+        let pop = NSPopover()
+        pop.contentViewController = vc
+        pop.behavior = .transient
+        pop.appearance = NSAppearance(named: .darkAqua)
+        pop.show(relativeTo: loadBtn.bounds, of: loadBtn, preferredEdge: .maxY)
+        statesPopover = pop
     }
 
     private static func makeSeparator() -> NSView {
@@ -329,6 +419,37 @@ final class PlayVoidView: NSView, NSPopoverDelegate {
     func setPiPActive(_ active: Bool) {
         pipBtn.setSymbol(active ? "pip.exit" : "pip.enter")
         pipBtn.toolTip = active ? "Exit Picture in Picture" : "Picture in Picture"
+    }
+
+    // MARK: - Stats HUD
+
+    /// Show or hide the performance HUD and pin it to `corner`. Driven by ``PlaySession`` from the
+    /// Settings ▸ Emulation toggle (applied live).
+    func setStats(visible: Bool, corner: Settings.StatsCorner) {
+        statsBadge.isHidden = !visible
+        statsCorner = corner
+        needsLayout = true
+    }
+
+    /// Feed the HUD freshly sampled figures (a no-op while it's hidden).
+    func updateStats(fps: Double, speedPercent: Int, drawRate: Double) {
+        guard !statsBadge.isHidden else { return }
+        statsBadge.update(fps: fps, speedPercent: speedPercent, drawRate: drawRate)
+    }
+
+    /// Pin the stats HUD into its corner, tucked clear of the top button row.
+    private func layoutStatsBadge() {
+        guard !statsBadge.isHidden else { return }
+        let sideM: CGFloat = 24, topInset: CGFloat = 16, discD: CGFloat = 40
+        let s = StatsBadge.size
+        let topRowY = bounds.height - topInset - discD   // the corner buttons' row
+        let x = statsCorner == .topLeft || statsCorner == .bottomLeft
+            ? sideM
+            : bounds.width - sideM - s.width
+        let y = statsCorner == .topLeft || statsCorner == .topRight
+            ? topRowY - 12 - s.height   // below the top buttons
+            : 16                        // above the bottom edge (toolbar is centered, corners are clear)
+        statsBadge.frame = CGRect(x: x, y: max(16, y), width: s.width, height: s.height)
     }
 
     private func press(_ b: GBAButtons) { touchPressed.insert(b); metalView.driver?.setTouch(touchPressed) }
@@ -478,9 +599,11 @@ final class PlayVoidView: NSView, NSPopoverDelegate {
     /// Show or hide the chrome. In immersive mode "hidden" is the resting state; movement reveals it.
     private func setChrome(revealed: Bool) {
         let hidden = immersive && !revealed
-        let chrome: [NSView] = [backBtn, fullscreenBtn, immersiveBtn, volumeIcon, volumeSlider,
+        var chrome: [NSView] = [backBtn, fullscreenBtn, immersiveBtn, volumeIcon, volumeSlider,
                                 toolbarGlass, sep1, sep2, saveBtn, loadBtn, speedBtn, shotBtn,
                                 padToggleBtn, pipBtn, ambienceBtn, settingsBtn]
+        if let lightBtn { chrome.append(lightBtn) }
+        if let discBtn { chrome.append(discBtn) }
         chrome.forEach { $0.isHidden = hidden }
         if hidden { hint.isHidden = true }
     }
@@ -557,6 +680,7 @@ final class PlayVoidView: NSView, NSPopoverDelegate {
         guideDim.cornerRadius = metalView.layer?.cornerRadius ?? 0
         CATransaction.commit()
         if padVisible { layoutPad(over: metalView.frame) }
+        layoutStatsBadge()
     }
 
     /// The windowed game-screen rect for a given void size — the rounded hero panel, aspect-fit between
@@ -580,13 +704,16 @@ final class PlayVoidView: NSView, NSPopoverDelegate {
 
         // token list: buttons and separators, in order.
         enum Tok { case btn(PlayerIconButton), sep(NSView) }
-        let tokens: [Tok] = [
+        var tokens: [Tok] = [
             .btn(saveBtn), .btn(loadBtn),
             .sep(sep1),
             .btn(speedBtn),
             .sep(sep2),
-            .btn(shotBtn), .btn(padToggleBtn), .btn(ambienceBtn), .btn(settingsBtn),
+            .btn(shotBtn), .btn(padToggleBtn),
         ]
+        if let lightBtn { tokens.append(.btn(lightBtn)) }
+        if let discBtn { tokens.append(.btn(discBtn)) }
+        tokens.append(contentsOf: [.btn(ambienceBtn), .btn(settingsBtn)])
         func width(_ t: Tok) -> CGFloat {
             if case let .btn(b) = t { return b.intrinsicContentSize.width } else { return sepW }
         }

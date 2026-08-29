@@ -24,6 +24,7 @@ struct GameView: View {
     @State private var padMask = GBAButtons()
 
     @State private var menuOpen = false
+    @State private var showSaveStates = false
     @State private var immersive = false
     @State private var isLandscape = false
     @State private var speed: Double
@@ -35,6 +36,7 @@ struct GameView: View {
     @AppStorage(SettingsKey.masterVolume) private var volume = SettingsDefault.masterVolume
     @AppStorage(SettingsKey.ambientScene) private var ambientSceneRaw = SettingsDefault.ambientScene
     @AppStorage(SettingsKey.ambientVolume) private var ambientVolume = SettingsDefault.ambientVolume
+    @AppStorage(SettingsKey.rewindEnabled) private var rewindEnabled = SettingsDefault.rewindEnabled
 
     // Per-game settings, applied at launch. Per-game override wins; otherwise inherit the global default.
     private let filter: DisplayFilter
@@ -61,8 +63,30 @@ struct GameView: View {
 
                 screen(landscape: landscape)
 
+                // Landscape floats the toolbar transparently over the game so the picture can use the
+                // full height — but that leaves the top-bar icons (fast-forward, save, menu…) sitting
+                // on unpredictable game content, where they wash out over bright frames (a white menu
+                // screen, etc.). A slim scrim — dark at the very top, fading to clear — sits beneath the
+                // floating bar so every control stays legible over ANY game, while the picture below is
+                // left untouched. Portrait already has a solid bar; full-screen hides the bar entirely.
+                if landscape && !immersive {
+                    LinearGradient(
+                        colors: [.black.opacity(0.6), .black.opacity(0.3), .clear],
+                        startPoint: .top, endPoint: .bottom)
+                        .frame(height: 130)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                }
+
                 // The on-screen pad is always available (a connected controller works alongside it).
-                TouchControls { touchMask = $0; pushInput() }
+                // The solar "light" button appears only for cartridges with a real light sensor
+                // (Boktai / Lunar Knights): tap toggles full sun (on) vs darkness (off).
+                TouchControls(
+                    onChange: { touchMask = $0; pushInput() },
+                    showSolar: session.hasLightSensor,
+                    onSolar: { session.setLuminance($0 ? 255 : 0) }
+                )
                     .opacity(AppSettings.controlOpacity)
                     .ignoresSafeArea(.container, edges: .bottom)
 
@@ -94,63 +118,47 @@ struct GameView: View {
             .onChange(of: landscape) { _, value in isLandscape = value }
         }
         .sheet(isPresented: $menuOpen, onDismiss: { session.setPaused(false) }) { menuSheet }
+        .sheet(isPresented: $showSaveStates, onDismiss: { session.setPaused(false) }) {
+            SaveStatesSheet(
+                directory: SavePaths.directory(forHash: game.romHash),
+                onSave: { slot, done in
+                    session.saveState(toSlotStateURL: slot.stateURL, thumbURL: slot.thumbURL) { ok in
+                        flash(ok ? "Saved to Slot \(slot.index)" : "Save failed"); done(ok)
+                    }
+                },
+                onLoad: { slot, done in
+                    session.loadState(fromSlotStateURL: slot.stateURL) { ok in
+                        flash(ok ? "Loaded Slot \(slot.index)" : "Load failed"); done(ok)
+                    }
+                })
+        }
         // In landscape, hide the title and let the toolbar float over the game (its buttons sit over
         // the side letterbox bars) so the picture can use the full screen height. Portrait keeps the
-        // solid bar.
-        .navigationTitle(isLandscape ? "" : game.displayTitle)
+        // solid bar but no title — the game name is redundant against the cover art.
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(DS.background, for: .navigationBar)
         .toolbarBackground(isLandscape ? .hidden : .visible, for: .navigationBar)
         .toolbar(immersive ? .hidden : .visible, for: .navigationBar)
         .statusBarHidden(immersive)
         .persistentSystemOverlays(immersive ? .hidden : .automatic)
+        // Portrait keeps a lean bar — fast-forward + audio leading, Save + Menu trailing — so those
+        // two never spill into iOS's auto "•••" overflow (where Save became unreachable and the
+        // overflow itself misbehaved). Landscape's toolbar floats over the wide letterbox with room
+        // to spare, so it also carries the quick Screenshot / Full Screen buttons. Both actions stay
+        // one tap away in portrait via the in-game Menu.
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Menu {
-                    Picker("Speed", selection: speedBinding) {
-                        Text("Normal (1×)").tag(1.0)
-                        Text("1.5×").tag(1.5)
-                        Text("2×").tag(2.0)
-                        Text("3×").tag(3.0)
-                        Text("4×").tag(4.0)
-                    }
-                } label: {
-                    Image(systemName: "forward.fill")
-                        .foregroundStyle(speed > 1.0 ? Color.green : DS.textSecondary)
-                }
-                .accessibilityLabel("Fast forward")
+            ToolbarItem(placement: .topBarLeading) { fastForwardButton }
+            ToolbarItem(placement: .topBarLeading) { audioButton }
+            if isLandscape {
+                ToolbarItem(placement: .topBarTrailing) { fullScreenButton }
+                ToolbarItem(placement: .topBarTrailing) { screenshotButton }
             }
-            ToolbarItem(placement: .topBarLeading) {
-                Button { ambiencePopover = true } label: {
-                    Image(systemName: "speaker.wave.2.fill")
-                        .foregroundStyle(ambientSceneRaw == AmbientScene.off.rawValue ? DS.textSecondary : Color.green)
-                }
-                .accessibilityLabel("Audio")
-                .popover(isPresented: $ambiencePopover) { ambiencePopoverContent }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { immersive.toggle() } label: {
-                    Image(systemName: immersive ? "arrow.down.right.and.arrow.up.left"
-                                                : "arrow.up.left.and.arrow.down.right")
-                }
-                .accessibilityLabel(immersive ? "Exit full screen" : "Full screen")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { takeScreenshot() } label: { Image(systemName: "camera") }
-                    .accessibilityLabel("Screenshot")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    session.saveState { ok in flash(ok ? "State saved" : "Save failed") }
-                } label: { Image(systemName: "square.and.arrow.down") }
-                    .accessibilityLabel("Save state")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { openMenu() } label: { Image(systemName: "line.3.horizontal") }
-                    .accessibilityLabel("Menu")
-            }
+            ToolbarItem(placement: .topBarTrailing) { saveSlotsButton }
+            ToolbarItem(placement: .topBarTrailing) { menuButton }
         }
         .onChange(of: volume) { _, v in session.setVolume(v) }
+        .onChange(of: rewindEnabled) { _, on in session.setRewindEnabled(on) }
         .onAppear {
             session.start()
             if speed != 1.0 { session.setSpeed(speed) }
@@ -167,8 +175,16 @@ struct GameView: View {
             }
         }
         .onDisappear {
-            publishContinuity()
-            session.stop()
+            // Clear the pad callbacks first: they capture this view (→ session, audio, framebuffers),
+            // so leaving them set retains the whole EmulationSession past teardown (a per-close leak).
+            pad.onChange = nil
+            pad.onMenu = nil
+            publishContinuity()   // enqueues the final snapshot (non-blocking) before the loop drains
+            // stop() blocks until the emulation thread finishes its frame + battery flush (up to 2s if
+            // the core wedges). Run it off the main actor so quitting a game never janks the UI. The
+            // captured `session` keeps the object alive until teardown completes.
+            let session = self.session
+            Task.detached { session.stop() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
@@ -189,16 +205,74 @@ struct GameView: View {
         }
     }
 
+    // MARK: - Toolbar buttons
+
+    private var fastForwardButton: some View {
+        Menu {
+            Picker("Speed", selection: speedBinding) {
+                Text("Normal (1×)").tag(1.0)
+                Text("1.5×").tag(1.5)
+                Text("2×").tag(2.0)
+                Text("3×").tag(3.0)
+                Text("4×").tag(4.0)
+            }
+        } label: {
+            Image(systemName: "forward.fill")
+                .foregroundStyle(speed > 1.0 ? DS.accent : DS.textSecondary)
+        }
+        .accessibilityLabel("Fast forward")
+    }
+
+    private var audioButton: some View {
+        Button { ambiencePopover = true } label: {
+            Image(systemName: "speaker.wave.2.fill")
+                .foregroundStyle(ambientSceneRaw == AmbientScene.off.rawValue ? DS.textSecondary : DS.accent)
+        }
+        .accessibilityLabel("Audio")
+        .popover(isPresented: $ambiencePopover) { ambiencePopoverContent }
+    }
+
+    private var fullScreenButton: some View {
+        Button { immersive.toggle() } label: {
+            Image(systemName: immersive ? "arrow.down.right.and.arrow.up.left"
+                                        : "arrow.up.left.and.arrow.down.right")
+        }
+        .accessibilityLabel(immersive ? "Exit full screen" : "Full screen")
+    }
+
+    private var screenshotButton: some View {
+        Button { takeScreenshot() } label: { Image(systemName: "camera") }
+            .accessibilityLabel("Screenshot")
+    }
+
+    /// Opens the multi-slot Save States panel (six numbered slots, each Save/Load with a thumbnail).
+    /// Pauses while the panel is up so the captured frame + state are the moment you opened it.
+    private var saveSlotsButton: some View {
+        Button {
+            session.setPaused(true)
+            showSaveStates = true
+        } label: { Image(systemName: "square.stack") }
+            .accessibilityLabel("Save states")
+    }
+
+    private var menuButton: some View {
+        Button { openMenu() } label: { Image(systemName: "line.3.horizontal") }
+            .accessibilityLabel("Menu")
+    }
+
     // MARK: - Screen
 
     @ViewBuilder
     private func screen(landscape: Bool) -> some View {
+        // The picture keeps the console's native aspect (GBA 3:2, Game Boy / Color 10:9) so it fills
+        // the frame edge-to-edge with no letterbox bars.
+        let aspect = game.system.screenAspect
         if landscape {
-            // Edge-to-edge: the 3:2 picture fills the full screen height (under the notch/home
-            // indicator and behind the floating toolbar), as large as a GBA screen can be on a phone.
+            // Edge-to-edge: the picture fills the full screen height (under the notch/home indicator
+            // and behind the floating toolbar), as large as the console's screen can be on a phone.
             GameMetalView(session: session, filter: filter,
                           lcdBacklit: AppSettings.lcdBacklit, lcdGhosting: AppSettings.lcdGhosting)
-                .aspectRatio(3.0 / 2.0, contentMode: .fit)
+                .aspectRatio(aspect, contentMode: .fit)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea(.all)
         } else {
@@ -209,7 +283,7 @@ struct GameView: View {
                 Spacer(minLength: 0)
                 GameMetalView(session: session, filter: filter,
                           lcdBacklit: AppSettings.lcdBacklit, lcdGhosting: AppSettings.lcdGhosting)
-                    .aspectRatio(3.0 / 2.0, contentMode: .fit)
+                    .aspectRatio(aspect, contentMode: .fit)
                     .frame(maxWidth: .infinity)
                 Spacer(minLength: 0)
                 Spacer(minLength: 0)   // bias the screen slightly above center, clear of the thumb area
@@ -250,6 +324,14 @@ struct GameView: View {
                     Button {
                         session.reset(); flash("Reset"); closeMenu()
                     } label: { Label("Reset Game", systemImage: "arrow.counterclockwise") }
+                    // Hold-to-rewind lives here (not floating over the game). The sheet's .medium
+                    // detent leaves the picture visible up top, so you can watch the scrub; pressing
+                    // un-pauses and rewinds, releasing re-pauses. Only shown when enabled in Settings.
+                    if rewindEnabled {
+                        RewindRow(
+                            onDown: { session.setPaused(false); session.setRewinding(true) },
+                            onUp: { session.setRewinding(false); session.setPaused(true) })
+                    }
                 }
 
                 Section("Speed") {
@@ -265,7 +347,7 @@ struct GameView: View {
                 Section("Audio") {
                     HStack {
                         Image(systemName: "speaker.fill").foregroundStyle(.secondary)
-                        Slider(value: $volume, in: 0...1).tint(.green)
+                        Slider(value: $volume, in: 0...1).tint(DS.accent)
                         Image(systemName: "speaker.wave.3.fill").foregroundStyle(.secondary)
                     }
                 }
@@ -277,7 +359,7 @@ struct GameView: View {
                     if ambientSceneRaw != AmbientScene.off.rawValue {
                         HStack {
                             Image(systemName: "cloud.rain").foregroundStyle(.secondary)
-                            Slider(value: ambientVolumeBinding, in: 0...1).tint(.green)
+                            Slider(value: ambientVolumeBinding, in: 0...1).tint(DS.accent)
                             Image(systemName: "cloud.heavyrain").foregroundStyle(.secondary)
                         }
                     }
@@ -329,7 +411,7 @@ struct GameView: View {
         }
         .padding()
         .frame(width: 300)
-        .tint(.green)
+        .tint(DS.accent)
         .presentationCompactAdaptation(.popover)
     }
 
@@ -393,24 +475,26 @@ struct GameView: View {
     }
 }
 
-/// Hold-to-rewind: reports pressed/released. Green while held.
-private struct RewindButton: View {
-    let onChange: (Bool) -> Void
+/// Hold-to-rewind menu row: scrubs the state history backward while pressed, green while held.
+/// Lives in the in-game menu's Save section; the caller un-pauses on press and re-pauses on release.
+private struct RewindRow: View {
+    let onDown: () -> Void
+    let onUp: () -> Void
     @State private var down = false
 
     var body: some View {
-        Image(systemName: "backward.fill")
-            .font(.system(size: 20))
-            .foregroundStyle(down ? .green : DS.textSecondary)
-            .frame(width: 54, height: 54)
-            .background(.black.opacity(0.45), in: Circle())
-            .overlay(Circle().stroke(DS.hairline, lineWidth: 1))
-            .contentShape(Circle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in if !down { down = true; onChange(true) } }
-                    .onEnded { _ in down = false; onChange(false) }
-            )
-            .accessibilityLabel("Rewind")
+        HStack {
+            Label("Hold to Rewind", systemImage: "backward.fill")
+            Spacer()
+            if down { Text("Rewinding…").font(.footnote) }
+        }
+        .foregroundStyle(down ? DS.accent : Color.primary)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in if !down { down = true; onDown() } }
+                .onEnded { _ in down = false; onUp() }
+        )
+        .accessibilityLabel("Hold to rewind")
     }
 }

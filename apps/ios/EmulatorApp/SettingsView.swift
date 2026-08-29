@@ -1,10 +1,13 @@
 import SwiftUI
+import LibraryKit
 
 /// App-wide settings. Edits persist to `UserDefaults` via `@AppStorage`; gameplay reads them at
 /// launch through `AppSettings`. Per-game overrides (the cart's Settings sheet) take precedence
 /// over the defaults set here.
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
+
+    @State private var showAbout = false
 
     @AppStorage(SettingsKey.masterVolume) private var masterVolume = SettingsDefault.masterVolume
     @AppStorage(SettingsKey.defaultFilter) private var defaultFilter = SettingsDefault.defaultFilter
@@ -15,11 +18,19 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.fastForwardSpeed) private var fastForwardSpeed = SettingsDefault.fastForwardSpeed
     @AppStorage(SettingsKey.rewindEnabled) private var rewindEnabled = SettingsDefault.rewindEnabled
     @AppStorage(SettingsKey.autoResume) private var autoResume = SettingsDefault.autoResume
+    @AppStorage(SettingsKey.transferEnabled) private var transferEnabled = SettingsDefault.transferEnabled
     @AppStorage(SettingsKey.joystickAsDpad) private var joystickAsDpad = SettingsDefault.joystickAsDpad
     @AppStorage(SettingsKey.ambientScene) private var ambientScene = SettingsDefault.ambientScene
     @AppStorage(SettingsKey.ambientVolume) private var ambientVolume = SettingsDefault.ambientVolume
     @AppStorage(SettingsKey.controlScale) private var controlScale = SettingsDefault.controlScale
     @AppStorage(SettingsKey.controlOpacity) private var controlOpacity = SettingsDefault.controlOpacity
+    @AppStorage(SettingsKey.trophyNotifications) private var trophyNotifications = SettingsDefault.trophyNotifications
+
+    // RetroAchievements login. Username (a public handle) lives in UserDefaults; the Web API key is
+    // a secret, so it's kept in the Keychain via `RACredentials` — the same store the game details
+    // sheet reads to light up trophies. `raApiKey` seeds from the Keychain and writes back on edit.
+    @AppStorage("ra.username") private var raUsername = ""
+    @State private var raApiKey = RACredentials.storedAPIKey ?? ""
 
     var body: some View {
         NavigationStack {
@@ -50,8 +61,8 @@ struct SettingsView: View {
                         ForEach(DisplayFilter.allCases) { Text($0.title).tag($0.rawValue) }
                     }
                     if defaultFilter == DisplayFilter.lcd.rawValue {
-                        Toggle("LCD Backlight (AGS-101)", isOn: $lcdBacklit).tint(.green)
-                        Toggle("LCD Ghosting", isOn: $lcdGhosting).tint(.green)
+                        Toggle("LCD Backlight (AGS-101)", isOn: $lcdBacklit).tint(DS.accent)
+                        Toggle("LCD Ghosting", isOn: $lcdGhosting).tint(DS.accent)
                     }
                 }
 
@@ -63,15 +74,15 @@ struct SettingsView: View {
                     }
                     HStack {
                         Image(systemName: "circle.dotted").foregroundStyle(.secondary)
-                        Slider(value: $controlOpacity, in: 0.2...1).tint(.green)
+                        Slider(value: $controlOpacity, in: 0.2...1).tint(DS.accent)
                         Image(systemName: "circle.fill").foregroundStyle(.secondary)
                     }
-                    Toggle("Haptics", isOn: $haptics).tint(.green)
-                    Toggle("Swap A / B by default", isOn: $defaultSwapAB).tint(.green)
+                    Toggle("Haptics", isOn: $haptics).tint(DS.accent)
+                    Toggle("Swap A / B by default", isOn: $defaultSwapAB).tint(DS.accent)
                 }
 
                 Section {
-                    Toggle("Analog Stick as D-Pad", isOn: $joystickAsDpad).tint(.green)
+                    Toggle("Analog Stick as D-Pad", isOn: $joystickAsDpad).tint(DS.accent)
                 } header: {
                     Text("Controller")
                 } footer: {
@@ -84,31 +95,71 @@ struct SettingsView: View {
                         Text("3×").tag(3.0)
                         Text("4×").tag(4.0)
                     }
-                    Toggle("Rewind", isOn: $rewindEnabled).tint(.green)
-                    Toggle("Auto-Resume on Launch", isOn: $autoResume).tint(.green)
+                    Toggle("Rewind", isOn: $rewindEnabled).tint(DS.accent)
+                    Toggle("Auto-Resume on Launch", isOn: $autoResume).tint(DS.accent)
                 }
 
-                Section("About") {
-                    LabeledContent("Version", value: appVersion)
-                    LabeledContent("Core", value: ContinuityService.coreVersion)
-                    LabeledContent("System", value: "Game Boy Advance")
+                Section {
+                    Toggle("Transfer Games Between My Devices", isOn: $transferEnabled).tint(DS.accent)
+                } header: {
+                    Text("Handoff")
+                } footer: {
+                    Text("Continue a game on another of your devices even if it doesn’t have the game yet: "
+                        + "Encore copies it over through your own private iCloud — never our servers — and "
+                        + "deletes the copy the moment your other device receives it. Only turn this on for "
+                        + "games you legally own. We don’t condone piracy.")
                 }
+
+                Section {
+                    Toggle("Trophy Banners", isOn: $trophyNotifications).tint(DS.accent)
+                    Button("Preview Banner") {
+                        // The banner host lives at the app root, behind this sheet — dismiss to the
+                        // library so the preview is actually visible, then post it.
+                        dismiss()
+                        Task {
+                            try? await Task.sleep(for: .seconds(0.5))
+                            AppNotifier.shared.post(
+                                .trophy(title: "Nice! Got the hang of it", points: 5))
+                        }
+                    }
+                } header: {
+                    Text("Notifications")
+                } footer: {
+                    Text("A subtle banner slides in when you unlock a RetroAchievement while playing.")
+                }
+
+                Section {
+                    TextField("Username", text: $raUsername)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    SecureField("Web API Key", text: $raApiKey)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .onChange(of: raApiKey) { _, new in
+                            RACredentials.setAPIKey(new.trimmingCharacters(in: .whitespaces))
+                        }
+                } header: {
+                    Text("RetroAchievements")
+                } footer: {
+                    Text("Sign in with your RetroAchievements username and Web API key (from Settings → Keys on retroachievements.org) to see trophies and story progress for each game.")
+                }
+
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showAbout = true } label: { Image(systemName: "info.circle") }
+                        .accessibilityLabel("About")
+                }
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+            }
+            .sheet(isPresented: $showAbout) {
+                NavigationStack { AboutView() }
+                    .preferredColorScheme(.dark)
             }
             // Keep the ambience in sync as the scene/volume change.
             .onChange(of: ambientScene) { _, _ in AmbientPlayer.shared.apply() }
             .onChange(of: ambientVolume) { _, _ in AmbientPlayer.shared.apply() }
         }
         .preferredColorScheme(.dark)
-    }
-
-    private var appVersion: String {
-        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-        let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
-        return "\(v) (\(b))"
     }
 }

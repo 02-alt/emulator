@@ -21,10 +21,15 @@ struct SaveStore {
     var batteryURL: URL { directory.appendingPathComponent("battery.sav") }
     var suspendURL: URL { directory.appendingPathComponent("suspend.state") }
     func slotURL(_ n: Int) -> URL { directory.appendingPathComponent("slot\(n).state") }
+    /// A PNG thumbnail written alongside a save-state slot, so the states browser can show a preview.
+    func slotThumbURL(_ n: Int) -> URL { directory.appendingPathComponent("slot\(n).png") }
 
     func read(_ url: URL) -> Data? { try? Data(contentsOf: url) }
     func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
     func remove(_ url: URL) { try? FileManager.default.removeItem(at: url) }
+    func modificationDate(_ url: URL) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+    }
 
     @discardableResult
     func write(_ data: Data, to url: URL) -> Bool {

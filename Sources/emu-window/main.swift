@@ -1,5 +1,7 @@
 import AppKit
+import EmulatorCore
 import LibraryKit
+import PSXCore
 
 // Milestone M6 — the app now opens to a wooden shelf **Library**; selecting a game opens a
 // **Play** window (the skeuomorphic console shell from M2–M5). Direct play is still available:
@@ -15,9 +17,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var playControllers: [PlayWindowController] = []
     private var settings: SettingsWindowController?   // one shared window for library + play
     private var continueItem: NSMenuItem?             // File ▸ Continue “…” — refreshed as the menu opens
+    private var soundMenu: NSMenu?                     // Sound ▸ background-ambience scenes (checkmarked)
+    private var soundItems: [NSMenuItem] = []          // one per scene, kept to update the checkmark
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let out = ProcessInfo.processInfo.environment["EMU_DEBUG_PSX_DISC"] {
+            renderSampleTile(system: "chd", to: out)
+            NSApp.terminate(nil); return
+        }
+        if let cue = ProcessInfo.processInfo.environment["EMU_DEBUG_PSX_BENCH"] {
+            benchPSX(rom: cue)
+            NSApp.terminate(nil); return
+        }
         applyDockIcon()
+        AppUpdater.shared.startIfSupported()   // begin Sparkle background update checks (bundled builds)
         AmbientPlayer.shared.apply()   // resume any saved background ambience; then it self-drives
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--rom"), i + 1 < args.count {
@@ -31,6 +44,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lib.show()
             library = lib
             installMenu(addGamesTarget: lib)
+            if ProcessInfo.processInfo.environment["EMU_DEBUG_PSX_CARD"] != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak lib] in
+                    lib?.debugShowMemoryCard()
+                }
+            }
+            if ProcessInfo.processInfo.environment["EMU_DEBUG_PSX_BIOS"] != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak lib] in
+                    lib?.setUpPlayStation()
+                }
+            }
+            if ProcessInfo.processInfo.environment["EMU_DEBUG_TROPHY"] != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    let host = NSApp.windows.first { $0.contentView is LibraryDashboardView } ?? NSApp.keyWindow
+                    TrophyPop.show(in: host, title: "Minish Cap Master", points: 25)
+                }
+            }
+        }
+    }
+
+    /// Debug: headlessly boot a PS1 ROM and time N frames, so lightrec JIT throughput can be measured
+    /// inside THIS binary (i.e. under its code signature + entitlements). Compare vs `emu-boot` (which
+    /// is unsigned, so its JIT is never gated) to tell whether the signed app's hardened runtime is
+    /// blocking the JIT.
+    private func benchPSX(rom: String) {
+        do {
+            let core = try PSXCore(systemDir: AppPaths.psxSystemDir, saveDir: AppPaths.psxSavesDir)
+            let env = ProcessInfo.processInfo.environment
+            if let s = env["EMU_DEBUG_PSX_SCALE"], let n = Int(s) { core.internalScale = n }
+            core.widescreen = env["EMU_DEBUG_PSX_WIDE"] != nil
+            try core.loadROM(at: URL(fileURLWithPath: rom))
+            let frames = 2000
+            let buttons: GBAButtons = []
+            core.setButtons(buttons)
+            let start = Date()
+            for _ in 0..<frames { core.runFrame() }
+            let dt = Date().timeIntervalSince(start)
+            let (vw, vh) = core.videoSize
+            NSLog("PSX_BENCH: \(frames) frames in \(String(format: "%.3f", dt))s = \(Int(Double(frames) / dt)) fps  res=\(vw)x\(vh) scale=\(core.internalScale) wide=\(core.widescreen)  coreRefresh=\(String(format: "%.2f", core.nominalRefreshRate))Hz discs=\(core.discCount)")
+        } catch {
+            NSLog("PSX_BENCH failed: \(error)")
+        }
+    }
+
+    /// Debug: render a single selected media tile (by ROM extension) to a PNG on a black backdrop,
+    /// so a new cartridge/disc silhouette can be eyeballed without disturbing the real library.
+    private func renderSampleTile(system ext: String, to path: String) {
+        let game = Game(title: "Ridge Racer", romFilenameStem: "Ridge Racer",
+                        romPath: "/tmp/Ridge Racer.\(ext)", romHash: "0")
+        let tile = CartridgeTileView(game: game)
+        if let coverPath = ProcessInfo.processInfo.environment["EMU_DEBUG_PSX_DISC_COVER"],
+           let img = NSImage(contentsOfFile: coverPath) {
+            tile.setCover(img)
+        }
+        tile.frame = NSRect(x: 0, y: 0, width: 340, height: 420)
+        tile.setSelected(true, animated: false)
+        tile.layoutSubtreeIfNeeded()
+        guard let rep = tile.bitmapImageRepForCachingDisplay(in: tile.bounds) else { return }
+        tile.cacheDisplay(in: tile.bounds, to: rep)
+        let final = NSImage(size: tile.bounds.size)
+        final.lockFocus()
+        NSColor.black.setFill(); NSRect(origin: .zero, size: tile.bounds.size).fill()
+        rep.draw(in: NSRect(origin: .zero, size: tile.bounds.size))
+        final.unlockFocus()
+        if let tiff = final.tiffRepresentation, let bmp = NSBitmapImageRep(data: tiff),
+           let png = bmp.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: path))
         }
     }
 
@@ -38,7 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// (no `.app` bundle / Info.plist), so there's no `CFBundleIconFile` to pick it up — we set
     /// `applicationIconImage` at launch instead. Harmless no-op if the resource is ever missing.
     private func applyDockIcon() {
-        guard let url = Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
+        guard let url = Bundle.moduleResources?.url(forResource: "AppIcon", withExtension: "icns"),
               let image = NSImage(contentsOf: url) else {
             NSLog("emu-window: AppIcon.icns resource missing — using default Dock icon")
             return
@@ -58,6 +137,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.target = self
         appMenu.addItem(settings)
         appMenu.addItem(.separator())
+        // In-app auto-update (Sparkle). Shown only for bundled builds that carry an update feed —
+        // a raw `swift run` dev build can't update itself, so the item would just no-op.
+        if AppUpdater.shared.isSupported {
+            let updates = NSMenuItem(title: "Check for Updates…",
+                                     action: #selector(checkForUpdatesMenu), keyEquivalent: "")
+            updates.target = self
+            appMenu.addItem(updates)
+            appMenu.addItem(.separator())
+        }
         let reveal = NSMenuItem(title: "Reveal Crash Reports…",
                                 action: #selector(revealCrashReports), keyEquivalent: "")
         reveal.target = self
@@ -82,6 +170,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let add = NSMenuItem(title: "Add Games…", action: #selector(LibraryWindowController.addGames), keyEquivalent: "o")
         add.target = addGamesTarget
         fileMenu.addItem(add)
+        fileMenu.addItem(.separator())
+        // One-time PlayStation BIOS setup. Discoverable here now; a `.biosRequired` at PS1 launch
+        // will present the same flow once PS1 launch is wired.
+        let psx = NSMenuItem(title: "Set Up PlayStation…",
+                             action: #selector(LibraryWindowController.setUpPlayStation), keyEquivalent: "")
+        psx.target = addGamesTarget
+        fileMenu.addItem(psx)
         fileItem.submenu = fileMenu
         mainMenu.addItem(fileItem)
 
@@ -99,6 +194,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         editItem.submenu = editMenu
         mainMenu.addItem(editItem)
 
+        // Sound — reach the background ambience from anywhere, not just Settings and the play window.
+        // Fully keyboard/VoiceOver navigable; the checkmark tracks the current scene (see menuNeedsUpdate).
+        let soundItem = NSMenuItem()
+        let sound = NSMenu(title: "Sound")
+        sound.autoenablesItems = false
+        sound.delegate = self
+        soundItems = Settings.AmbientScene.allCases.map { scene in
+            let it = NSMenuItem(title: scene.title, action: #selector(selectAmbientScene(_:)), keyEquivalent: "")
+            it.target = self
+            it.tag = scene.rawValue
+            it.image = NSImage(systemSymbolName: AmbiencePanelView.symbol(scene), accessibilityDescription: nil)
+            sound.addItem(it)
+            return it
+        }
+        sound.addItem(.separator())
+        let louder = NSMenuItem(title: "Louder", action: #selector(ambienceLouder),
+                                keyEquivalent: String(UnicodeScalar(NSUpArrowFunctionKey)!))
+        louder.keyEquivalentModifierMask = [.command, .option]; louder.target = self
+        sound.addItem(louder)
+        let softer = NSMenuItem(title: "Softer", action: #selector(ambienceSofter),
+                                keyEquivalent: String(UnicodeScalar(NSDownArrowFunctionKey)!))
+        softer.keyEquivalentModifierMask = [.command, .option]; softer.target = self
+        sound.addItem(softer)
+        soundItem.submenu = sound
+        mainMenu.addItem(soundItem)
+        soundMenu = sound
+
         NSApp.mainMenu = mainMenu
     }
 
@@ -106,6 +228,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// always names the game you'd actually resume. Disabled with a plain "Continue" title when the
     /// library is empty or nothing's been played yet.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === soundMenu {
+            let current = Settings.shared.ambientScene.rawValue
+            for it in soundItems { it.state = it.tag == current ? .on : .off }
+            return
+        }
         guard let item = continueItem else { return }
         if let game = library?.lastPlayedGame {
             item.title = "Continue “\(game.displayTitle)”"
@@ -133,11 +260,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return thumb
     }
 
+    /// Sound ▸ pick a background-ambience scene (tag holds the ``Settings/AmbientScene`` raw value).
+    /// Writes straight to ``Settings``; the live ``AmbientPlayer`` and any open picker pick it up.
+    @objc private func selectAmbientScene(_ sender: NSMenuItem) {
+        Settings.shared.ambientScene = Settings.AmbientScene(rawValue: sender.tag) ?? .off
+    }
+
+    @objc private func ambienceLouder() { nudgeAmbienceVolume(0.1) }
+    @objc private func ambienceSofter() { nudgeAmbienceVolume(-0.1) }
+    private func nudgeAmbienceVolume(_ delta: Double) {
+        Settings.shared.ambientVolume = max(0, min(1, Settings.shared.ambientVolume + delta))
+    }
+
     @objc private func revealCrashReports() {
         let dir = CrashReporter.directory
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         NSWorkspace.shared.open(dir)
     }
+
+    /// App ▸ Check for Updates… — hands off to Sparkle's user-initiated update flow.
+    @objc private func checkForUpdatesMenu() { AppUpdater.shared.checkForUpdates() }
 
     /// Present the single shared Settings window (from the menu, the library, or a play window).
     @objc private func openSettings() {
@@ -158,6 +300,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let gameID { self?.library?.recordPlaytime(gameID: gameID, seconds: seconds) }
         }
         playControllers.append(controller)
+    }
+
+    /// If a game's running inside the library window, defer termination briefly to publish its state
+    /// for cross-device resume ("quit on Mac, continue on iPhone"). Bounded by the flush's own timeout
+    /// so a stalled network can't hang the quit; otherwise quit immediately.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard library?.hasActivePlay == true else { return .terminateNow }
+        Task { @MainActor in
+            await library?.flushContinuityForTermination()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {

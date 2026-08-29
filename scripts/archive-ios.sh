@@ -4,9 +4,12 @@
 # PREREQUISITES (one-time, must be done by the account owner — can't be automated headless):
 #   1. Apple Developer Program membership (have it: team JLR4F273N8).
 #   2. In App Store Connect, create the app record for bundle id `com.comalada.gbaemulator`.
-#   3. Provision the CloudKit container `iCloud.com.comalada.gbaemulator` (Xcode → target →
+#   3. Provision the CloudKit container `iCloud.com.buildtoberemembered.encore` (Xcode → target →
 #      Signing & Capabilities → iCloud, or the CloudKit dashboard) — required because the app has
-#      the iCloud entitlement.
+#      the iCloud entitlement. This exact id must match EmulatorApp.entitlements and the
+#      `cloudContainer` constant in both apps' ContinuityService; the SAME container must be enabled
+#      for the macOS app too, so the two devices share one CloudKit database (that's what makes
+#      cross-device Continue + "Send to My Devices" work).
 #   4. Register at least one device (plug an iPhone into Xcode once) OR ensure an App Store
 #      distribution certificate + profile exists. Automatic signing creates these with
 #      -allowProvisioningUpdates once the above are in place.

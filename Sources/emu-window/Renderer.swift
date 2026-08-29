@@ -31,14 +31,27 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let nearestSampler: MTLSamplerState   // Sharp / LCD — crisp texel fetches
     private let linearSampler: MTLSamplerState    // Smooth — bilinear softening
     /// Two textures ping-ponged each frame so the LCD path can read the previous frame for ghosting.
-    private let textures: [MTLTexture]
+    /// Re-created when the core's output resolution changes (the PS1 switches modes mid-game); a
+    /// fixed-resolution system like the GBA never triggers that path.
+    private var textures: [MTLTexture]
     private var writeIndex = 0
-    private let bytesPerRow: Int
+    private var bytesPerRow: Int
     private var frameBuffer: [UInt32]
+    private var texWidth: Int
+    private var texHeight: Int
 
     /// When set, pins the display filter for this surface regardless of the global setting — used by the
     /// per-game filter override. `nil` falls back to `Settings.shared.displayFilter`.
     var filterOverride: Settings.DisplayFilter?
+
+    /// When set, letterbox to this fixed width÷height instead of the framebuffer's own ratio. The PS1
+    /// draws at varying pixel sizes (256/320/640 wide) that all display as 4:3, so its host pins 4:3
+    /// here; the GBA leaves it nil and uses the framebuffer ratio directly.
+    var displayAspect: Double?
+
+    /// Total frames actually presented to the screen. Sampled over time by the stats overlay to show
+    /// the on-screen draw rate (distinct from the emulation rate the driver reports).
+    private(set) var presentedFrames = 0
 
     init(driver: EmulationDriver, view: MTKView) {
         self.driver = driver
@@ -82,22 +95,38 @@ final class Renderer: NSObject, MTKViewDelegate {
         self.nearestSampler = nearest
         self.linearSampler = linear
 
-        let td = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba8Unorm, width: driver.width, height: driver.height, mipmapped: false)
-        td.usage = [.shaderRead]
-        self.textures = (0..<2).map { _ in
-            guard let t = device.makeTexture(descriptor: td) else { fatalError("Texture creation failed") }
-            return t
-        }
+        self.texWidth = driver.width
+        self.texHeight = driver.height
+        self.textures = Renderer.makeTextures(device: device, width: driver.width, height: driver.height)
         self.bytesPerRow = driver.width * MemoryLayout<UInt32>.size
 
         super.init()
     }
 
+    private static func makeTextures(device: MTLDevice, width: Int, height: Int) -> [MTLTexture] {
+        let td = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm, width: max(1, width), height: max(1, height), mipmapped: false)
+        td.usage = [.shaderRead]
+        return (0..<2).map { _ in
+            guard let t = device.makeTexture(descriptor: td) else { fatalError("Texture creation failed") }
+            return t
+        }
+    }
+
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
-        driver.copyLatestFrame(into: &frameBuffer)
+        let (w, h) = driver.copyLatestFrame(into: &frameBuffer)
+        guard w > 0, h > 0 else { return }   // no frame produced yet
+
+        // The core switched output resolution (PS1 mode change) — rebuild the textures to match, so
+        // the upload region and the sampled area stay in step with the framebuffer's real size.
+        if w != texWidth || h != texHeight {
+            texWidth = w; texHeight = h
+            bytesPerRow = w * MemoryLayout<UInt32>.size
+            textures = Renderer.makeTextures(device: device, width: w, height: h)
+            writeIndex = 0
+        }
 
         // Ping-pong: upload the new frame into one texture; the other still holds the previous frame
         // (for LCD ghosting). Flip after presenting so next frame reads this one as its "previous".
@@ -105,7 +134,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         let previous = textures[1 - writeIndex]
         frameBuffer.withUnsafeBytes { raw in
             current.replace(
-                region: MTLRegionMake2D(0, 0, driver.width, driver.height),
+                region: MTLRegionMake2D(0, 0, texWidth, texHeight),
                 mipmapLevel: 0,
                 withBytes: raw.baseAddress!,
                 bytesPerRow: bytesPerRow)
@@ -121,7 +150,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         let isLCD = filter == .lcd
 
         var uniforms = Uniforms(
-            texSize: SIMD2(Float(driver.width), Float(driver.height)),
+            texSize: SIMD2(Float(texWidth), Float(texHeight)),
             outSize: SIMD2(Float(viewport.width), Float(viewport.height)),
             lcd: isLCD ? 1 : 0,
             backlit: Settings.shared.lcdBacklit ? 1 : 0,
@@ -141,12 +170,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         cmd.present(drawable)
         cmd.commit()
 
+        presentedFrames += 1
         writeIndex = 1 - writeIndex
     }
 
-    /// Centered viewport preserving the GBA 3:2 aspect ratio (letterbox/pillarbox).
+    /// Centered viewport preserving the display aspect (letterbox/pillarbox) — the fixed override
+    /// when set (PS1 = 4:3), otherwise the current framebuffer's own ratio (GBA 3:2).
     private func aspectFitViewport(drawableSize: CGSize) -> MTLViewport {
-        let target = Double(driver.width) / Double(driver.height)
+        let target = displayAspect ?? (Double(texWidth) / Double(texHeight))
         let dw = Double(drawableSize.width)
         let dh = Double(drawableSize.height)
         var vw = dw

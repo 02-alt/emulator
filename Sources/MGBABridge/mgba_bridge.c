@@ -5,7 +5,9 @@
 
 #include <mgba/core/core.h>
 #include <mgba/core/blip_buf.h>
+#include <mgba/core/version.h>
 #include <mgba/gba/core.h>
+#include <mgba/gb/core.h>
 #include <mgba/internal/gba/gba.h>
 #include <mgba/internal/gba/overrides.h>
 #include <mgba/internal/gba/cart/gpio.h>
@@ -13,13 +15,50 @@
 #define BRIDGE_SAMPLE_RATE 32768
 #define BRIDGE_AUDIO_BUFFER 2048
 
+// Simulated solar sensor. mGBA reads ambient light through a `GBALuminanceSource` callback pair; we
+// install one whose reading is a plain value the app drives (button held → full sun). `source` must
+// be the first member so the `GBALuminanceSource*` mGBA hands back casts straight to this struct.
+struct BridgeLuminance {
+    struct GBALuminanceSource source;
+    uint8_t value;
+};
+
 struct GBABridge {
     struct mCore* core;
     color_t* video;      // color_t is 32-bit in this build
     unsigned width;
     unsigned height;
     int sampleRate;
+    int platform;        // enum BridgePlatform — selects the core and which overrides apply
+    struct BridgeLuminance lux;
 };
+
+// mGBA calls sample() before readLuminance() to let a real sensor latch a fresh reading; ours is a
+// value the app sets directly, so there is nothing to latch.
+static void bridge_luminance_sample(struct GBALuminanceSource* s) { (void) s; }
+
+// Higher value = brighter, matching mGBA's own frontends (their brightness slider maxes at 0xFF).
+static uint8_t bridge_luminance_read(struct GBALuminanceSource* s) {
+    return ((struct BridgeLuminance*) s)->value;
+}
+
+// Re-query the core's desired output size and, if it changed, grow/shrink our video buffer to match.
+// Needed because the GB/GBC core reports a placeholder size until a ROM is loaded and its model is
+// known (it defaults to the 256x224 Super Game Boy border size while `board` is still unset, then
+// settles to 160x144 for a plain Game Boy / Color game); without this the game renders into the
+// top-left of an oversized buffer. The GBA core's size is constant, so this is a no-op there.
+// Returns false only on allocation failure. Call before bridge_apply_buffers (which sets the stride).
+static bool bridge_sync_dimensions(GBABridge* b) {
+    unsigned w = b->width, h = b->height;
+    b->core->desiredVideoDimensions(b->core, &w, &h);
+    if (w == b->width && h == b->height) return true;
+    color_t* resized = realloc(b->video, (size_t)w * h * sizeof(color_t));
+    if (!resized) return false;
+    b->video = resized;
+    b->width = w;
+    b->height = h;
+    return true;
+}
 
 // (Re)point the core at our video buffer and (re)set audio rates. Safe to call after reset,
 // since some cores rebuild these on reset.
@@ -32,10 +71,15 @@ static void bridge_apply_buffers(GBABridge* b) {
 }
 
 GBABridge* gba_bridge_create(void) {
+    return gba_bridge_create_system(BRIDGE_PLATFORM_GBA);
+}
+
+GBABridge* gba_bridge_create_system(int platform) {
     GBABridge* b = calloc(1, sizeof(GBABridge));
     if (!b) return NULL;
 
-    b->core = GBACoreCreate();
+    b->platform = platform;
+    b->core = platform == BRIDGE_PLATFORM_GB ? GBCoreCreate() : GBACoreCreate();
     if (!b->core) { free(b); return NULL; }
 
     b->core->init(b->core);
@@ -46,6 +90,15 @@ GBABridge* gba_bridge_create(void) {
 
     b->sampleRate = BRIDGE_SAMPLE_RATE;
     bridge_apply_buffers(b);
+
+    // Install the solar-sensor luminance source (GBA only; the peripheral type is GBA-specific).
+    // Starts dark; survives reset since the core keeps the peripheral pointer across resets.
+    b->lux.source.sample = bridge_luminance_sample;
+    b->lux.source.readLuminance = bridge_luminance_read;
+    b->lux.value = 0;
+    if (platform == BRIDGE_PLATFORM_GBA) {
+        b->core->setPeripheral(b->core, mPERIPH_GBA_LUMINANCE, &b->lux.source);
+    }
     return b;
 }
 
@@ -89,6 +142,10 @@ static enum SavedataType bridge_detect_savetype(const struct GBA* gba) {
 // RTC-dependent Pokémon-family hacks otherwise hang on a white screen. Recognised games keep the
 // hardware mGBA already detected.
 static void bridge_apply_overrides(GBABridge* b) {
+    // GB/GBC: mGBA's Game Boy core reads the MBC and save size straight from the cart header, so the
+    // GBA-only save-type scan and RTC forcing below don't apply (and its board isn't a `struct GBA`).
+    if (b->platform != BRIDGE_PLATFORM_GBA) return;
+
     struct GBA* gba = (struct GBA*) b->core->board;
     if (!gba || !gba->memory.rom) return;
 
@@ -108,6 +165,7 @@ bool gba_bridge_load_rom(GBABridge* b, const char* path) {
     if (!mCoreLoadFile(b->core, path)) return false;
     b->core->reset(b->core);
     bridge_apply_overrides(b);
+    if (!bridge_sync_dimensions(b)) return false;   // the loaded game's true output size is known now
     bridge_apply_buffers(b);
     return true;
 }
@@ -115,6 +173,7 @@ bool gba_bridge_load_rom(GBABridge* b, const char* path) {
 void gba_bridge_reset(GBABridge* b) {
     b->core->reset(b->core);
     bridge_apply_overrides(b);
+    bridge_sync_dimensions(b);
     bridge_apply_buffers(b);
 }
 
@@ -151,6 +210,17 @@ void gba_bridge_set_keys(GBABridge* b, uint16_t keys) {
     b->core->setKeys(b->core, keys);
 }
 
+bool gba_bridge_has_light_sensor(GBABridge* b) {
+    if (b->platform != BRIDGE_PLATFORM_GBA) return false;
+    struct GBA* gba = (struct GBA*) b->core->board;
+    if (!gba) return false;
+    return (gba->memory.hw.devices & HW_LIGHT_SENSOR) != 0;
+}
+
+void gba_bridge_set_luminance(GBABridge* b, uint8_t value) {
+    b->lux.value = value;
+}
+
 size_t gba_bridge_state_size(GBABridge* b) {
     return b->core->stateSize(b->core);
 }
@@ -175,4 +245,8 @@ void gba_bridge_free(void* p) {
 
 bool gba_bridge_load_save_data(GBABridge* b, const void* data, size_t len) {
     return b->core->savedataRestore(b->core, data, len, true);
+}
+
+const char* gba_bridge_core_version(void) {
+    return projectVersion;
 }

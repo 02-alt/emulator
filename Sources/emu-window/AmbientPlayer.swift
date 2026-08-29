@@ -111,6 +111,9 @@ final class AmbientPlayer {
         case .off:   nil
         case .rain:  "rain"
         case .storm: "storm"
+        case .cabin: "cabin"
+        case .park:  "park"
+        case .shore: "shore"
         }
     }
 
@@ -127,12 +130,16 @@ final class AmbientPlayer {
     /// Decode `resource` (capped to `maxLoopSeconds`), match it to `target`, and crossfade it into a
     /// seamless loop.
     private static func loadSeamlessLoop(resource: String, target: AVAudioFormat) -> AVAudioPCMBuffer? {
-        guard let url = Bundle.module.url(forResource: resource, withExtension: "mp3", subdirectory: "ambience")
-                ?? Bundle.module.url(forResource: resource, withExtension: "mp3") else {
-            NSLog("AmbientPlayer: missing resource \(resource).mp3"); return nil
+        // Accept any bundled audio container (some loops are pre-trimmed AAC `.m4a` rather than mp3).
+        let exts = ["mp3", "m4a", "caf"]
+        guard let url = exts.lazy.compactMap({ ext in
+            Bundle.moduleResources?.url(forResource: resource, withExtension: ext, subdirectory: "ambience")
+                ?? Bundle.moduleResources?.url(forResource: resource, withExtension: ext)
+        }).first else {
+            NSLog("AmbientPlayer: missing resource \(resource).(mp3|m4a|caf)"); return nil
         }
         guard let file = try? AVAudioFile(forReading: url) else {
-            NSLog("AmbientPlayer: could not open \(resource).mp3"); return nil
+            NSLog("AmbientPlayer: could not open \(url.lastPathComponent)"); return nil
         }
         let srcFormat = file.processingFormat
         let cap = AVAudioFrameCount(min(Double(file.length), maxLoopSeconds * srcFormat.sampleRate))

@@ -72,7 +72,9 @@ final class Toast: NSView {
         translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             centerXAnchor.constraint(equalTo: host.centerXAnchor),
-            bottomAnchor.constraint(equalTo: host.bottomAnchor, constant: -DS.Space.xxl),
+            // Sit clear of the shelf's footer capsule band (which occupies the bottom ~86pt) so a "sent"
+            // notice never overlaps the Play/Settings/Send buttons.
+            bottomAnchor.constraint(equalTo: host.bottomAnchor, constant: -(DS.Space.xxl + DS.Space.ml)),
         ])
     }
 

@@ -12,8 +12,10 @@ struct PlayRequest: Hashable {
 struct EmulatorApp: App {
     @State private var library = LibraryModel()
     @State private var continuity = ContinuityService()
+    @State private var launcher = LaunchCoordinator()
 
     @State private var path: [PlayRequest] = []
+    @State private var whatsNew: ReleaseNote?
 
     init() {
         CrashReporter.install()   // capture crashes to Application Support/Emulator/crashes before any UI
@@ -21,18 +23,58 @@ struct EmulatorApp: App {
 
     var body: some Scene {
         WindowGroup {
-            NavigationStack(path: $path) {
-                LibraryView()
-                    .navigationDestination(for: PlayRequest.self) {
-                        GameView(game: $0.game, resume: $0.resume)
-                    }
+            ZStack {
+                NavigationStack(path: $path) {
+                    LibraryView()
+                        .navigationDestination(for: PlayRequest.self) {
+                            GameView(game: $0.game, resume: $0.resume)
+                        }
+                }
+
+                // Cartridge launch cinematic: while a launch is in flight it covers the screen with an
+                // opaque black stage, lifts the focused cart, dives it into the screen, plays the GBA
+                // boot clip, then presents the game beneath itself and fades away to reveal it.
+                if let game = launcher.game {
+                    LaunchCinematicView(
+                        game: game,
+                        coverURL: launcher.coverURL,
+                        startFrame: launcher.startFrame,
+                        // Mount the game with the push animation SUPPRESSED, so it doesn't slide in
+                        // from the trailing edge. The cinematic is still opaque-black over it at this
+                        // point; it then fades away (rootGone) to cross-dissolve the game into view.
+                        onPresentGame: {
+                            var tx = Transaction()
+                            tx.disablesAnimations = true
+                            withTransaction(tx) { path.append(PlayRequest(game: game)) }
+                        },
+                        onDone: { launcher.end() })
+                        .ignoresSafeArea()
+                        .zIndex(1)
+                }
+
+                // In-app notification banners (trophy unlocks, etc.) ride above everything, including
+                // the launch cinematic, and never intercept touches to the game or shelf beneath.
+                NotificationBannerHost()
+                    .zIndex(2)
             }
             .environment(library)
             .environment(continuity)
+            .environment(launcher)
             .preferredColorScheme(.dark)
             .tint(.white)
+            .sheet(item: $whatsNew) { note in
+                WhatsNewView(note: note)
+            }
             .task {
                 AmbientPlayer.shared.apply()   // start the chosen soundscape (no-op if Off)
+                // Automation seam: EMU_PREVIEW_BANNER pops a sample trophy banner on launch, so the
+                // in-app notification can be demonstrated on-device where taps can't be scripted.
+                if ProcessInfo.processInfo.environment["EMU_PREVIEW_BANNER"] != nil {
+                    Task {
+                        try? await Task.sleep(for: .seconds(1.0))
+                        AppNotifier.shared.post(.trophy(title: "Nice! Got the hang of it", points: 5))
+                    }
+                }
                 // Automation seam: EMU_AUTOPLAY opens the first game on launch (used to drive the
                 // play screen from the simulator, where taps can't be scripted). No-op otherwise.
                 if ProcessInfo.processInfo.environment["EMU_AUTOPLAY"] != nil,
@@ -48,6 +90,9 @@ struct EmulatorApp: App {
                         path = [PlayRequest(game: game, resume: true)]
                     }
                 }
+                // What's New: on the first launch after an update, present the release's notes — but
+                // only when we're landing on the library, not jumping straight into a game.
+                if path.isEmpty { whatsNew = WhatsNew.pending() }
             }
         }
     }
@@ -57,11 +102,15 @@ struct EmulatorApp: App {
 /// A small local echo of the macOS `DesignSystem` so the iOS UI reads from the same intent.
 enum DS {
     static let background = Color.black
-    static let surface = Color(white: 0.10)
     static let hairline = Color.white.opacity(0.14)
     static let textPrimary = Color.white
     static let textSecondary = Color(white: 0.62)
     static let textTertiary = Color(white: 0.34)
+
+    /// The single accent — a muted slate blue-grey. Deliberately NOT green (or any saturated hue):
+    /// it sits quietly against the black chrome and the glass, reading as "active" without shouting.
+    /// Use this everywhere a control needs a tint (toggles, sliders, on-states) instead of `.green`.
+    static let accent = Color(red: 0.44, green: 0.55, blue: 0.68)
 
     static func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
