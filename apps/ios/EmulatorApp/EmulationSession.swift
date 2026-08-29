@@ -1,6 +1,7 @@
 import Foundation
 import UIKit
 import EmulatorCore
+import Synchronization
 
 /// Drives an `EmulatorCore` on a dedicated high-priority thread at the system's refresh rate. It is
 /// the single owner of the core (which is not `Sendable`): every core touch happens on the emulation
@@ -56,8 +57,10 @@ final class EmulationSession: @unchecked Sendable {
     private var commands: [(EmulatorCore) -> Void] = []
     private let commandLock = NSLock()
 
-    private var thread: Thread?
-    private var running = false
+    private var thread: Thread?            // main-thread-only (start/stop)
+    // Written on main (start/stop), read every frame on the emulation thread — atomic so the loop's
+    // `running` read is a well-defined cross-thread flag rather than a data race on a plain Bool.
+    private let running = Atomic<Bool>(false)
     private let didStop = DispatchSemaphore(value: 0)   // signaled once the loop has fully exited
 
     init(core: EmulatorCore, saveDirectory: URL? = nil) {
@@ -141,7 +144,7 @@ final class EmulationSession: @unchecked Sendable {
         }
         audio.start()
         audio.setVolume(AppSettings.masterVolume)
-        running = true
+        running.store(true, ordering: .sequentiallyConsistent)
         let t = Thread { [weak self] in self?.loop() }
         t.name = "emulation"
         t.qualityOfService = .userInteractive
@@ -152,7 +155,7 @@ final class EmulationSession: @unchecked Sendable {
     func stop() {
         guard thread != nil else { return }
         persistBattery()          // queue a final battery flush before the loop exits
-        running = false
+        running.store(false, ordering: .sequentiallyConsistent)
         // Wait for the emulation thread to finish its current frame AND its final battery flush
         // before returning: otherwise the next session could start reading a half-written save, and
         // the core could be touched after teardown (use-after-free). Bounded — the loop re-checks
@@ -292,7 +295,7 @@ final class EmulationSession: @unchecked Sendable {
         let slotsPerFrame = Double(audioSampleRate) / refreshRate * 2
         let targetSlots = slotsPerFrame * 4
         var next = Date().timeIntervalSinceReferenceDate
-        while running {
+        while running.load(ordering: .sequentiallyConsistent) {
             drainCommands()
 
             stateLock.lock()

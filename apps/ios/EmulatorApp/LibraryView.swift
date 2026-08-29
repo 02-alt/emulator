@@ -103,8 +103,16 @@ struct LibraryView: View {
         }
         .overlay {
             if let flight = sendFlight {
+                let flightIDs = flight.games.map(\.id)
                 SendFlourishView(games: flight.games, covers: library.covers,
-                                 dest: flight.dest, result: flight.result) { sendFlight = nil }
+                                 dest: flight.dest, result: flight.result) {
+                    // Only clear if this is still the flight on screen — a newer send may have replaced
+                    // it, and an older instance's completion timer must not wipe the newer flourish.
+                    if sendFlight?.games.map(\.id) == flightIDs { sendFlight = nil }
+                }
+                    // Re-identify per flight so a second send gets a fresh animation (new @State) rather
+                    // than reusing the finished first one's state.
+                    .id(flightIDs)
                     .allowsHitTesting(false)
                     .zIndex(25)
             }
@@ -500,7 +508,11 @@ struct LibraryView: View {
         // The flourish's iCloud chip now carries the success confirmation; keep a banner only for the
         // failure case (it lingers longer / is announced), so the two signals don't double up.
         await MainActor.run { sendFlight?.result = ok }
-        if !ok {
+        if ok {
+            // The success beat lives on the (decorative, non-interactive) iCloud chip, so VoiceOver
+            // gets nothing from it — announce the confirmation explicitly.
+            UIAccessibility.post(notification: .announcement, argument: "Sent to \(dest)")
+        } else {
             AppNotifier.shared.post(
                 .info("Couldn’t reach iCloud — try again", symbol: "icloud.slash", caption: "Handoff"))
         }

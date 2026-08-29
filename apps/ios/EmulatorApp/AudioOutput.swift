@@ -60,6 +60,14 @@ final class AudioOutput: @unchecked Sendable {
         // be using it in the library, and deactivating would cut its sound off.
     }
 
+    deinit {
+        // Safety net: `start()` registers a `self`-targeting interruption observer that only `stop()`
+        // removes. If an instance is ever released without `stop()` (an error path), the dangling
+        // observer would crash on the next interruption — so tear it down here too.
+        NotificationCenter.default.removeObserver(self)
+        engine.stop()
+    }
+
     /// Master output level, 0…1.
     func setVolume(_ volume: Double) {
         engine.mainMixerNode.outputVolume = Float(min(1, max(0, volume)))

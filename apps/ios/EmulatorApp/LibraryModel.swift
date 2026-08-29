@@ -41,14 +41,15 @@ final class LibraryModel {
         if changed { store.save() }
     }
 
-    /// Auto-import any `.gba` sitting in the app's Documents directory (where Files shows the app
+    /// Auto-import any playable ROM sitting in the app's Documents directory (where Files shows the app
     /// under "On My iPhone"), then remove the loose copy — so dropping ROMs into the app folder just
-    /// works, and re-drops dedupe by content hash.
+    /// works, and re-drops dedupe by content hash. Covers every iOS-playable extension (GBA + Game Boy
+    /// / Color), not just `.gba` — a dropped `.gbc`/`.gb` used to be silently ignored.
     private func importFromDocuments() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let items = (try? FileManager.default.contentsOfDirectory(
             at: docs, includingPropertiesForKeys: nil)) ?? []
-        for url in items where url.pathExtension.lowercased() == "gba" {
+        for url in items where GameSystem.iosPlayableExtensions.contains(url.pathExtension.lowercased()) {
             if (try? importROM(from: url)) != nil {
                 try? FileManager.default.removeItem(at: url)
             }
