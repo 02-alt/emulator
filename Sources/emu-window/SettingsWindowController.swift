@@ -108,6 +108,19 @@ final class SettingsView: NSView {
             case .about: "About"
             }
         }
+        /// The SF Symbol shown beside each tab in the rail — a System-Settings-style visual anchor, in
+        /// the app's monochrome ink (no colour tiles).
+        var icon: String {
+            switch self {
+            case .video: "tv"
+            case .audio: "speaker.wave.2"
+            case .controls: "gamecontroller"
+            case .emulation: "cpu"
+            case .achievements: "trophy"
+            case .storage: "externaldrive"
+            case .about: "info.circle"
+            }
+        }
     }
 
     init() {
@@ -142,7 +155,7 @@ final class SettingsView: NSView {
         rail.spacing = DS.Space.xs
         rail.translatesAutoresizingMaskIntoConstraints = false
         railItems = Tab.allCases.map { tab in
-            let item = SidebarItem(title: tab.title) { [weak self] in self?.select(tab.rawValue) }
+            let item = SidebarItem(title: tab.title, icon: tab.icon) { [weak self] in self?.select(tab.rawValue) }
             rail.addArrangedSubview(item)
             item.widthAnchor.constraint(equalTo: rail.widthAnchor).isActive = true
             return item
@@ -499,7 +512,23 @@ final class SettingsView: NSView {
             stack.addArrangedSubview(signature)
         }
 
+        applyGroupRhythm(stack)
         return stack
+    }
+
+    /// Give the pane a spacing *rhythm* instead of one flat gap everywhere (the panes are built with a
+    /// uniform `DS.Space.md`): open up a larger gap before each section header so groups read as
+    /// distinct, and tuck each explanatory hint tight under the control it describes. Related items stay
+    /// close, unrelated groups breathe — the spacing-scale principle applied after the fact.
+    private func applyGroupRhythm(_ stack: NSStackView) {
+        let subs = stack.arrangedSubviews
+        for (i, view) in subs.enumerated() where i > 0 {
+            switch view.identifier?.rawValue {
+            case "settings.header": stack.setCustomSpacing(DS.Space.xl, after: subs[i - 1])
+            case "settings.hint":   stack.setCustomSpacing(DS.Space.sm, after: subs[i - 1])
+            default: break
+            }
+        }
     }
 
     /// One dependency credit for the About tab: its name, a one-line description, and a button that
@@ -558,7 +587,10 @@ final class SettingsView: NSView {
     }
 
     private func header(_ text: String) -> NSView {
-        NSTextField(labelWithAttributedString: DS.Text.label(text, size: 15, color: DS.Color.textPrimary))
+        let field = NSTextField(labelWithAttributedString:
+            DS.Text.label(text, size: 15, color: DS.Color.textPrimary))
+        field.identifier = NSUserInterfaceItemIdentifier("settings.header")   // → group rhythm
+        return field
     }
 
     private func hint(_ text: String) -> NSView {
@@ -567,6 +599,7 @@ final class SettingsView: NSView {
         f.isSelectable = false
         f.preferredMaxLayoutWidth = 380
         f.widthAnchor.constraint(lessThanOrEqualToConstant: 400).isActive = true
+        f.identifier = NSUserInterfaceItemIdentifier("settings.hint")   // → hugs its control
         return f
     }
 
@@ -649,25 +682,45 @@ private final class FlippedView: NSView { override var isFlipped: Bool { true } 
 /// One tab in the left rail: an uppercase pixel label that fills with a raised surface when selected.
 private final class SidebarItem: NSView {
     private let onClick: () -> Void
+    private let icon = NSImageView()
     private let label = NSTextField(labelWithString: "")
     private let title: String
     private var isSelected = false
     private var tracking: NSTrackingArea?
     private var hovered = false
 
-    init(title: String, onClick: @escaping () -> Void) {
+    init(title: String, icon iconName: String, onClick: @escaping () -> Void) {
         self.title = title
         self.onClick = onClick
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = DS.Radius.control
+
+        // Monochrome SF Symbol glyph, tinted to match the label (template image → contentTintColor).
+        let img = NSImage(systemSymbolName: iconName, accessibilityDescription: nil)
+        img?.isTemplate = true
+        icon.image = img
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+        icon.imageScaling = .scaleProportionallyDown
+        icon.setAccessibilityElement(false)   // decorative; the item carries the name
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(icon)
+
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
         NSLayoutConstraint.activate([
             heightAnchor.constraint(equalToConstant: 30),
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Space.sm),
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Space.sm),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 18),
+            label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: DS.Space.sm),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+
+        // One accessible element: a button named for the tab (VoiceOver reads "Video, button").
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(title)
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("not implemented") }
@@ -677,6 +730,7 @@ private final class SidebarItem: NSView {
     private func refresh() {
         let color = isSelected ? DS.Color.textPrimary : (hovered ? DS.Color.textPrimary : DS.Color.textSecondary)
         label.attributedStringValue = DS.Text.label(title, size: 14, color: color)
+        icon.contentTintColor = color
         layer?.backgroundColor = (isSelected ? DS.Color.surfaceRaised : NSColor.clear).cgColor
     }
 

@@ -35,74 +35,97 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Audio") {
-                    HStack {
-                        Image(systemName: "speaker.fill").foregroundStyle(.secondary)
-                        Slider(value: $masterVolume, in: 0...1)
-                        Image(systemName: "speaker.wave.3.fill").foregroundStyle(.secondary)
-                    }
+                Section {
+                    SettingSlider(title: "Volume",
+                                  leadingIcon: "speaker.fill", trailingIcon: "speaker.wave.3.fill",
+                                  value: $masterVolume)
+                } header: {
+                    SectionHeader(icon: "speaker.wave.2.fill", title: "Audio")
                 }
 
-                Section("Ambience") {
-                    Picker("Soundscape", selection: $ambientScene) {
+                Section {
+                    Picker(selection: $ambientScene) {
                         ForEach(AmbientScene.allCases) { Text($0.title).tag($0.rawValue) }
+                    } label: {
+                        Label("Soundscape", systemImage: "cloud.rain.fill")
                     }
                     if ambientScene != AmbientScene.off.rawValue {
-                        HStack {
-                            Image(systemName: "cloud.rain").foregroundStyle(.secondary)
-                            Slider(value: $ambientVolume, in: 0...1)
-                            Image(systemName: "cloud.heavyrain").foregroundStyle(.secondary)
-                        }
+                        SettingSlider(title: "Ambience Volume",
+                                      leadingIcon: "cloud.rain", trailingIcon: "cloud.heavyrain",
+                                      value: $ambientVolume)
                     }
+                } header: {
+                    SectionHeader(icon: "waveform", title: "Ambience")
                 }
 
-                Section("Video") {
-                    Picker("Default Filter", selection: $defaultFilter) {
+                Section {
+                    Picker(selection: $defaultFilter) {
                         ForEach(DisplayFilter.allCases) { Text($0.title).tag($0.rawValue) }
+                    } label: {
+                        Label("Default Filter", systemImage: "camera.filters")
                     }
                     if defaultFilter == DisplayFilter.lcd.rawValue {
                         Toggle("LCD Backlight (AGS-101)", isOn: $lcdBacklit).tint(DS.accent)
                         Toggle("LCD Ghosting", isOn: $lcdGhosting).tint(DS.accent)
                     }
+                } header: {
+                    SectionHeader(icon: "tv.fill", title: "Video")
                 }
 
-                Section("On-Screen Controls") {
-                    Picker("Button Size", selection: $controlScale) {
-                        Text("Small").tag(0.85)
-                        Text("Medium").tag(1.0)
-                        Text("Large").tag(1.2)
+                Section {
+                    // 3 discrete choices → a segmented control: more scannable, and each option clears
+                    // the 44-pt touch-target guidance far better than a pushed menu row.
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        Text("Button Size")
+                        Picker("Button Size", selection: $controlScale) {
+                            Text("Small").tag(0.85)
+                            Text("Medium").tag(1.0)
+                            Text("Large").tag(1.2)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
                     }
-                    HStack {
-                        Image(systemName: "circle.dotted").foregroundStyle(.secondary)
-                        Slider(value: $controlOpacity, in: 0.2...1).tint(DS.accent)
-                        Image(systemName: "circle.fill").foregroundStyle(.secondary)
-                    }
+                    .padding(.vertical, Space.xxs)
+
+                    SettingSlider(title: "Opacity",
+                                  leadingIcon: "circle.dotted", trailingIcon: "circle.fill",
+                                  value: $controlOpacity, range: 0.2...1)
                     Toggle("Haptics", isOn: $haptics).tint(DS.accent)
                     Toggle("Swap A / B by default", isOn: $defaultSwapAB).tint(DS.accent)
+                } header: {
+                    SectionHeader(icon: "dpad.fill", title: "On-Screen Controls")
                 }
 
                 Section {
                     Toggle("Analog Stick as D-Pad", isOn: $joystickAsDpad).tint(DS.accent)
                 } header: {
-                    Text("Controller")
+                    SectionHeader(icon: "gamecontroller.fill", title: "Controller")
                 } footer: {
                     Text("MFi, Xbox and DualSense controllers connect automatically and use the standard mapping. When one is connected the on-screen controls hide.")
                 }
 
-                Section("Gameplay") {
-                    Picker("Fast-Forward Speed", selection: $fastForwardSpeed) {
-                        Text("2×").tag(2.0)
-                        Text("3×").tag(3.0)
-                        Text("4×").tag(4.0)
+                Section {
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        Text("Fast-Forward Speed")
+                        Picker("Fast-Forward Speed", selection: $fastForwardSpeed) {
+                            Text("2×").tag(2.0)
+                            Text("3×").tag(3.0)
+                            Text("4×").tag(4.0)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
                     }
+                    .padding(.vertical, Space.xxs)
                     Toggle("Rewind", isOn: $rewindEnabled).tint(DS.accent)
                     Toggle("Auto-Resume on Launch", isOn: $autoResume).tint(DS.accent)
+                } header: {
+                    SectionHeader(icon: "gauge.with.needle", title: "Gameplay")
                 }
 
                 Section {
                     Toggle("Transfer Games Between My Devices", isOn: $transferEnabled).tint(DS.accent)
                 } header: {
-                    Text("Handoff")
+                    SectionHeader(icon: "iphone.and.arrow.forward", title: "Handoff")
                 } footer: {
                     Text("Continue a game on another of your devices even if it doesn’t have the game yet: "
                         + "Encore copies it over through your own private iCloud — never our servers — and "
@@ -123,7 +146,7 @@ struct SettingsView: View {
                         }
                     }
                 } header: {
-                    Text("Notifications")
+                    SectionHeader(icon: "bell.badge.fill", title: "Notifications")
                 } footer: {
                     Text("A subtle banner slides in when you unlock a RetroAchievement while playing.")
                 }
@@ -137,7 +160,7 @@ struct SettingsView: View {
                             RACredentials.setAPIKey(new.trimmingCharacters(in: .whitespaces))
                         }
                 } header: {
-                    Text("RetroAchievements")
+                    SectionHeader(icon: "trophy.fill", title: "RetroAchievements")
                 } footer: {
                     Text("Sign in with your RetroAchievements username and Web API key (from Settings → Keys on retroachievements.org) to see trophies and story progress for each game.")
                 }
