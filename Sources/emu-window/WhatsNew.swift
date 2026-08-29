@@ -23,19 +23,19 @@ enum WhatsNew {
     /// The highlights of the latest update. Keep it short — three or four lines.
     static let items: [AppAlert.Feature] = [
         AppAlert.Feature(
-            symbol: "iphone.and.arrow.forward",
-            title: "Your library, on every device",
-            detail: "Your games follow you across your own devices through your private iCloud — it never leaves your account. Whatever you pick up arrives ready to play, saves and all, and the transfer copy clears once it lands."
+            symbol: "slider.horizontal.3",
+            title: "Settings, redrawn",
+            detail: "Every section in the sidebar now carries its own icon, and the panes have a clearer rhythm — related options sit together, groups breathe apart. Finding what you’re after is quicker, and it reads better at a glance."
         ),
         AppAlert.Feature(
-            symbol: "arrow.down.circle",
-            title: "Incoming games, made clear",
-            detail: "A distinct blue “Receive” card shows a game waiting to be brought over — separate from your Continue prompts, so you always know what’s a new game versus a resume."
+            symbol: "figure.wave",
+            title: "Kinder to everyone",
+            detail: "An accessibility pass across Settings: the sidebar reads cleanly to VoiceOver, and sliders now announce what they control and their current value."
         ),
         AppAlert.Feature(
             symbol: "sparkles",
-            title: "A little more delight",
-            detail: "Cartridges launch toward the cloud when you send and drop away when you delete — each with its own sound."
+            title: "Fit and finish",
+            detail: "A round of quiet polish and stability fixes throughout the app."
         ),
     ]
 
