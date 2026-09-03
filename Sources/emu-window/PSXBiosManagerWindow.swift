@@ -1,87 +1,115 @@
 import AppKit
 import LibraryKit
 
-/// A small standalone panel that lists each PlayStation BIOS region with its own Add / Replace
-/// button, plus a link to a legal dumping guide. Opened from Settings so the per-region rows don't
-/// clutter the main pane. Chrome mirrors the Settings window.
+/// The PlayStation BIOS manager, presented as an **in-window overlay** (dimmed backdrop + centered
+/// card) over the Settings pane — so the settings stay visible behind it rather than being hidden by
+/// a separate window. Lists each region with its own Add / Replace button, plus a legal dumping-guide
+/// link. Dismisses on Done, Esc, or a click on the backdrop. Mirrors `AppAlert`'s presentation.
 @MainActor
-final class PSXBiosManagerWindow: NSObject, NSWindowDelegate {
-    /// Fired when the panel closes, so Settings can refresh its summary.
-    var onClose: (() -> Void)?
+final class PSXBiosPanel: NSView {
+    private let dim = CALayer()
+    private let card = NSView()
+    private let rows = NSStackView()
+    private var onClose: (() -> Void)?
 
-    private let window: NSWindow
-    private let stack = NSStackView()
-    private let contentWidth: CGFloat = 400
+    private let cardWidth: CGFloat = 420
+    private var contentWidth: CGFloat { cardWidth - DS.Space.lg * 2 }
 
-    override init() {
-        window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: contentWidth + DS.Space.lg * 2, height: 300),
-            styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        super.init()
-        window.title = "PlayStation BIOS"
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = DS.Color.background
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .visible
-        window.isReleasedWhenClosed = false
-        window.level = .floating
-        window.delegate = self
-
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = DS.Space.md
-        stack.edgeInsets = NSEdgeInsets(top: DS.Space.lg, left: DS.Space.lg,
-                                        bottom: DS.Space.lg, right: DS.Space.lg)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        let host = NSView()
-        host.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: host.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: host.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: host.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: host.bottomAnchor),
-        ])
-        window.contentView = host
-        rebuild()
+    /// Present over `window`'s content view. `onClose` fires after dismissal (Settings refreshes its
+    /// summary). No-op without a window.
+    static func present(in window: NSWindow?, onClose: (() -> Void)? = nil) {
+        guard let host = window?.contentView else { return }
+        let panel = PSXBiosPanel(onClose: onClose)
+        panel.frame = host.bounds
+        panel.autoresizingMask = [.width, .height]
+        host.addSubview(panel)
+        panel.layer?.zPosition = 1000
+        panel.animateIn()
+        window?.makeFirstResponder(panel)
     }
 
-    /// Show the panel centered over `host` (the Settings/library window), or screen-centered.
-    func show(over host: NSWindow?) {
-        window.setContentSize(NSSize(width: contentWidth + DS.Space.lg * 2, height: fittingHeight()))
-        if let host {
-            let hf = host.frame, wf = window.frame
-            window.setFrameOrigin(NSPoint(x: hf.midX - wf.width / 2, y: hf.midY - wf.height / 2))
-        } else {
-            window.center()
-        }
-        window.makeKeyAndOrderFront(nil)
+    private init(onClose: (() -> Void)?) {
+        self.onClose = onClose
+        super.init(frame: .zero)
+        wantsLayer = true
+        dim.backgroundColor = NSColor.black.withAlphaComponent(0.62).cgColor
+        layer?.addSublayer(dim)
+        buildCard()
     }
+    required init?(coder: NSCoder) { fatalError("not implemented") }
 
-    func windowWillClose(_ notification: Notification) { onClose?() }
+    override func layout() { super.layout(); dim.frame = bounds }
 
-    // MARK: - Content
+    // MARK: - Card
 
-    private func rebuild() {
-        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+    private func buildCard() {
+        card.wantsLayer = true
+        card.layer?.backgroundColor = DS.Color.background.cgColor
+        card.layer?.cornerRadius = DS.Radius.card
+        card.layer?.borderColor = DS.Color.hairlineStrong.cgColor
+        card.layer?.borderWidth = 1
+        card.layer?.shadowColor = NSColor.black.cgColor
+        card.layer?.shadowOpacity = 0.5
+        card.layer?.shadowRadius = 30
+        card.layer?.shadowOffset = CGSize(width: 0, height: -8)
+        card.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(card)
+
+        let column = NSStackView()
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = DS.Space.md
+        column.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(column)
 
         let title = NSTextField(labelWithAttributedString:
-            DS.Text.label("PlayStation BIOS", size: 15, color: DS.Color.textPrimary))
-        stack.addArrangedSubview(title)
+            DS.Text.label("PlayStation BIOS", size: 20, color: DS.Color.textPrimary))
+        column.addArrangedSubview(title)
 
         let blurb = NSTextField(wrappingLabelWithString: "")
         blurb.attributedStringValue = DS.Text.plain(
             "Add each region so every game runs on its intended BIOS — games still play on any one you "
             + "have. Use a 512 KB BIOS dumped from a console you own.", size: 12, color: DS.Color.textTertiary)
+        blurb.isSelectable = false
         blurb.preferredMaxLayoutWidth = contentWidth
         blurb.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
-        stack.addArrangedSubview(blurb)
+        column.addArrangedSubview(blurb)
 
-        for region in PSXRegion.allCases { stack.addArrangedSubview(regionRow(region)) }
+        rows.orientation = .vertical
+        rows.alignment = .leading
+        rows.spacing = DS.Space.md
+        rows.translatesAutoresizingMaskIntoConstraints = false
+        column.addArrangedSubview(rows)
+        rebuildRows()
 
-        stack.addArrangedSubview(PixelButton(title: "How to Dump Your BIOS ↗") {
+        column.setCustomSpacing(DS.Space.lg, after: rows)
+        column.addArrangedSubview(PixelButton(title: "How to Dump Your BIOS ↗") {
             PSXBiosOnboarding.openDumpingGuide()
         })
+
+        // Done, trailing.
+        let done = PixelButton(title: "Done") { [weak self] in self?.dismiss() }
+        done.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(done)
+
+        NSLayoutConstraint.activate([
+            card.centerXAnchor.constraint(equalTo: centerXAnchor),
+            card.centerYAnchor.constraint(equalTo: centerYAnchor),
+            card.widthAnchor.constraint(equalToConstant: cardWidth),
+
+            column.topAnchor.constraint(equalTo: card.topAnchor, constant: DS.Space.lg),
+            column.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: DS.Space.lg),
+            column.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -DS.Space.lg),
+
+            done.topAnchor.constraint(equalTo: column.bottomAnchor, constant: DS.Space.lg),
+            done.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -DS.Space.lg),
+            done.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -DS.Space.lg),
+        ])
+    }
+
+    private func rebuildRows() {
+        rows.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for region in PSXRegion.allCases { rows.addArrangedSubview(regionRow(region)) }
     }
 
     private func regionRow(_ region: PSXRegion) -> NSView {
@@ -99,7 +127,7 @@ final class PSXBiosManagerWindow: NSObject, NSWindowDelegate {
 
         let button = PixelButton(title: installed ? "Replace…" : "Add…") { [weak self] in
             guard let self else { return }
-            PSXBiosOnboarding.addBIOS(for: region, in: self.window) { [weak self] in self?.rebuild() }
+            PSXBiosOnboarding.addBIOS(for: region, in: self.window) { [weak self] in self?.rebuildRows() }
         }
 
         let r = NSStackView(views: [name, status, spacer, button])
@@ -111,8 +139,49 @@ final class PSXBiosManagerWindow: NSObject, NSWindowDelegate {
         return r
     }
 
-    private func fittingHeight() -> CGFloat {
-        stack.layoutSubtreeIfNeeded()
-        return stack.fittingSize.height
+    // MARK: - Dismissal
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        // A click on the dimmed backdrop (outside the card) closes; clicks inside are handled by the
+        // card's controls, or ignored.
+        let p = convert(event.locationInWindow, from: nil)
+        if !card.frame.contains(p) { dismiss() }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 || event.keyCode == 36 || event.keyCode == 76 { dismiss() }  // Esc / Return
+        else { super.keyDown(with: event) }
+    }
+
+    private func animateIn() {
+        alphaValue = 0
+        card.layer?.transform = CATransform3DMakeScale(0.96, 0.96, 1)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = Motion.quick
+            ctx.timingFunction = Motion.timing
+            animator().alphaValue = 1
+        }
+        let pop = Motion.springAnimation("transform",
+                                         from: NSValue(caTransform3D: CATransform3DMakeScale(0.96, 0.96, 1)),
+                                         to: NSValue(caTransform3D: CATransform3DIdentity),
+                                         response: 0.4, dampingRatio: 0.82)
+        card.layer?.add(pop, forKey: "transform")
+        card.layer?.transform = CATransform3DIdentity
+    }
+
+    private func dismiss() {
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = Motion.quick
+            ctx.timingFunction = Motion.timing
+            animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.removeFromSuperview()
+                self.onClose?()
+            }
+        })
     }
 }

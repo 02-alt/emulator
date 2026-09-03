@@ -95,9 +95,6 @@ final class SettingsView: NSView {
     /// The download link for a found update (About tab), opened by the Download button.
     private var pendingUpdateURL: URL?
 
-    /// The PlayStation BIOS panel while it's open (held so it isn't deallocated).
-    private var biosManager: PSXBiosManagerWindow?
-
     private enum Tab: Int, CaseIterable {
         case video, audio, controls, emulation, achievements, storage, about
         var title: String {
@@ -597,12 +594,9 @@ final class SettingsView: NSView {
         return r
     }
 
-    /// Open the standalone BIOS panel; refresh this pane's summary when it closes.
+    /// Open the BIOS manager as an overlay over the current window; refresh the summary on close.
     private func presentBiosManager() {
-        let mgr = PSXBiosManagerWindow()
-        mgr.onClose = { [weak self] in self?.biosManager = nil; self?.refresh() }
-        biosManager = mgr
-        mgr.show(over: window)
+        PSXBiosPanel.present(in: window) { [weak self] in self?.refresh() }
     }
 
     private func header(_ text: String) -> NSView {
