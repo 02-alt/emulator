@@ -64,7 +64,10 @@ final class EmulationDriver: @unchecked Sendable {
         self.core = core
         hasLightSensor = core.hasLightSensor
         discCount = core.discCount
-        (width, height) = core.videoSize
+        // Size every frame buffer to the core's *maximum* frame, not the current one — the PS1 grows
+        // its frame with the internal-resolution upscale, and a buffer sized to a smaller frame would
+        // overrun once the core emits a bigger one.
+        (width, height) = core.maxVideoSize
         sampleRate = core.audioSampleRate
         refreshRate = core.nominalRefreshRate
         latestFrame = [UInt32](repeating: 0, count: width * height)
@@ -186,13 +189,15 @@ final class EmulationDriver: @unchecked Sendable {
     }
 
     /// Copy the most recently produced frame for display (called on the main/render thread) and
-    /// report its dimensions. `dst` must hold at least `width * height` pixels (the max); only the
-    /// live frame's `w * h` pixels are written, tightly packed.
+    /// report its dimensions. Writes at most `capacity` pixels, so an oversized frame is truncated
+    /// rather than overrunning `dst`; size `dst` to `width * height` (the max) for a complete frame.
     @discardableResult
-    func copyLatestFrame(into dst: UnsafeMutablePointer<UInt32>) -> (width: Int, height: Int) {
+    func copyLatestFrame(into dst: UnsafeMutablePointer<UInt32>, capacity: Int) -> (width: Int, height: Int) {
         frameLock.lock()
         let (w, h) = (latestW, latestH)
-        latestFrame.withUnsafeBufferPointer { dst.update(from: $0.baseAddress!, count: w * h) }
+        latestFrame.withUnsafeBufferPointer {
+            dst.update(from: $0.baseAddress!, count: min(w * h, min(capacity, $0.count)))
+        }
         frameLock.unlock()
         return (w, h)
     }
@@ -307,7 +312,9 @@ final class EmulationDriver: @unchecked Sendable {
     /// captures the frame's live dimensions (the PS1 changes them per frame), clamped to the buffer
     /// so a larger-than-max report can never overrun the swap.
     private func publishVideo() {
-        producerFrame.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!) }
+        producerFrame.withUnsafeMutableBufferPointer {
+            core.copyVideo(into: $0.baseAddress!, capacity: $0.count)
+        }
         let (w, h) = core.videoSize
         producerW = min(max(w, 0), width)
         producerH = min(max(h, 0), height)

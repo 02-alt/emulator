@@ -515,9 +515,12 @@ final class LibraryWindowController: NSObject {
             var game = base
             // Copy the ROM into the app's managed folder so the library can't break if the
             // original file is moved or deleted.
-            if let managed = copyIntoLibrary(url) {
-                game.romPath = managed.path
-            }
+            let managed = copyIntoLibrary(url)
+            // A .cue that can't be assembled (its track files are missing) yields nil — don't add a
+            // dead entry that would only crash/black-screen at load. For single-file ROMs a failed
+            // copy falls back to the original path (still playable while it stays put).
+            if managed == nil, url.pathExtension.lowercased() == "cue" { failed += 1; continue }
+            if let managed { game.romPath = managed.path }
             place(&game)
             added += 1
         }
@@ -592,32 +595,58 @@ final class LibraryWindowController: NSObject {
         catch { NSLog("ROM copy failed: \(error)"); return nil }
     }
 
+    /// Disc track file extensions a .cue can point at (raw sector dumps). Used to recover from a cue
+    /// whose FILE line was renamed out of sync with the track beside it.
+    private static let discTrackExtensions: Set<String> = ["bin", "img", "iso"]
+
     /// Copy a .cue and every track file it references into a dedicated subfolder of the ROMs dir,
     /// returning the copied .cue. The .cue references tracks by bare filename, so keeping their names
-    /// and co-locating them preserves the references.
+    /// and co-locating them preserves the references. Returns nil (and leaves nothing behind) if a
+    /// referenced track is missing and can't be recovered — a cue without its data isn't a playable
+    /// game, and silently importing it produced a dead entry that crashed at load.
     private func copyCueIntoLibrary(_ cue: URL) -> URL? {
+        let fm = FileManager.default
         let base = cue.deletingPathExtension().lastPathComponent
         var folder = AppPaths.romsDir.appendingPathComponent(base, isDirectory: true)
         var n = 2
-        while FileManager.default.fileExists(atPath: folder.path) {
+        while fm.fileExists(atPath: folder.path) {
             folder = AppPaths.romsDir.appendingPathComponent("\(base) (\(n))", isDirectory: true)
             n += 1
         }
         do {
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
             let text = (try? String(contentsOf: cue, encoding: .utf8)) ?? ""
             let srcDir = cue.deletingLastPathComponent()
-            for name in Self.cueReferencedFiles(text) {
+            let referenced = Self.cueReferencedFiles(text)
+            // Raw track files sitting next to the cue — the fallback pool when a FILE name is stale.
+            let siblingTracks = ((try? fm.contentsOfDirectory(at: srcDir, includingPropertiesForKeys: nil)) ?? [])
+                .filter { Self.discTrackExtensions.contains($0.pathExtension.lowercased()) }
+            for name in referenced {
                 let from = srcDir.appendingPathComponent(name)
-                guard FileManager.default.fileExists(atPath: from.path) else {
-                    NSLog("cue references a missing track: \(name)"); continue
+                if fm.fileExists(atPath: from.path) {
+                    try fm.copyItem(at: from, to: folder.appendingPathComponent(name))
+                    continue
                 }
-                try FileManager.default.copyItem(at: from, to: folder.appendingPathComponent(name))
+                // The cue names a track that isn't beside it — common with renamed dumps (the FILE
+                // line still says "Game (J) [SLUS-xxxxx].bin" but the file was renamed to match the
+                // cue). If there's exactly one track file and the cue expects exactly one, adopt it
+                // under the referenced name so the reference resolves.
+                if referenced.count == 1, siblingTracks.count == 1 {
+                    try fm.copyItem(at: siblingTracks[0], to: folder.appendingPathComponent(name))
+                    continue
+                }
+                NSLog("cue references a missing track '\(name)' with no unambiguous fallback; aborting import")
+                try? fm.removeItem(at: folder)
+                return nil
             }
             let destCue = folder.appendingPathComponent(cue.lastPathComponent)
-            try FileManager.default.copyItem(at: cue, to: destCue)
+            try fm.copyItem(at: cue, to: destCue)
             return destCue
-        } catch { NSLog("cue import failed: \(error)"); return nil }
+        } catch {
+            NSLog("cue import failed: \(error)")
+            try? fm.removeItem(at: folder)
+            return nil
+        }
     }
 
     // MARK: - Multi-disc

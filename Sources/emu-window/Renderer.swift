@@ -116,7 +116,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
-        let (w, h) = driver.copyLatestFrame(into: &frameBuffer)
+        let (w, h) = driver.copyLatestFrame(into: &frameBuffer, capacity: frameBuffer.count)
         guard w > 0, h > 0 else { return }   // no frame produced yet
 
         // The core switched output resolution (PS1 mode change) — rebuild the textures to match, so

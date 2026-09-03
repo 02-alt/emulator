@@ -52,7 +52,10 @@ public class MGBACore: EmulatorCore {
     public func reset() { gba_bridge_reset(handle) }
     public func runFrame() { gba_bridge_run_frame(handle) }
 
-    public func copyVideo(into buffer: UnsafeMutablePointer<UInt32>) {
+    public func copyVideo(into buffer: UnsafeMutablePointer<UInt32>, capacity: Int) {
+        // GBA/GBC output is a fixed 240×160; callers always allocate at least that, so the mgba
+        // bridge's exact-size copy can't overrun. `capacity` is unused here (it exists for the PS1,
+        // whose frame size varies), but the buffer is never smaller than the frame.
         gba_bridge_video(handle, buffer)
     }
 

@@ -60,8 +60,14 @@ let opts = parseOptions()
 let core: EmulatorCore
 if opts.usePSX {
     do {
-        core = try PSXCore(systemDir: URL(fileURLWithPath: opts.systemDir),
-                           saveDir: URL(fileURLWithPath: opts.saveDir))
+        let psx = try PSXCore(systemDir: URL(fileURLWithPath: opts.systemDir),
+                              saveDir: URL(fileURLWithPath: opts.saveDir))
+        // Match the app's internal-resolution override so headless runs can reproduce the exact
+        // framebuffer size a given user setting produces (EMU_DEBUG_PSX_SCALE, as emu-window reads).
+        if let s = ProcessInfo.processInfo.environment["EMU_DEBUG_PSX_SCALE"], let n = Int(s) {
+            psx.internalScale = n
+        }
+        core = psx
         print("Using real Beetle PSX core")
         print("BIOS dir: \(opts.systemDir)  (needs scph*.bin)")
     } catch {
@@ -87,8 +93,11 @@ if let romPath = opts.romPath {
     print("No --rom given; running mock core with no cartridge.")
 }
 
-// Run the frame loop, draining audio each frame the way the real audio thread will.
-var videoBuffer = [UInt32](repeating: 0, count: w * h)
+// Run the frame loop, draining audio each frame the way the real audio thread will. Size the buffer
+// to the core's maximum frame (the PS1's grows with its internal-resolution upscale) so copyVideo
+// never truncates or overruns.
+let (maxW, maxH) = core.maxVideoSize
+var videoBuffer = [UInt32](repeating: 0, count: max(w * h, maxW * maxH))
 let audioPerFrame = core.audioSampleRate / 60
 var audioBuffer = [Int16](repeating: 0, count: audioPerFrame * 2)
 
@@ -97,7 +106,7 @@ let start = Date()
 for frame in 0..<opts.frames {
     core.setButtons(frame % 2 == 0 ? [] : [.a])
     core.runFrame()
-    videoBuffer.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!) }
+    videoBuffer.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!, capacity: $0.count) }
     _ = audioBuffer.withUnsafeMutableBufferPointer {
         core.readAudio(into: $0.baseAddress!, maxFrames: audioPerFrame)
     }
@@ -115,7 +124,7 @@ print(String(format: "Ran %d frames in %.3fs (%.0f fps headless)", opts.frames, 
 // PS1 resolution is dynamic — the true final size is only known after running. `videoBuffer` was
 // sized to the core's maximum, and copyVideo packs the frame tightly, so read the real size now.
 let (fw, fh) = core.videoSize
-videoBuffer.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!) }
+videoBuffer.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!, capacity: $0.count) }
 if (fw, fh) != (w, h) { print("Final resolution: \(fw)x\(fh)") }
 try writePPM(videoBuffer, width: fw, height: fh, to: opts.outPath)
 print("Wrote final framebuffer -> \(opts.outPath)")

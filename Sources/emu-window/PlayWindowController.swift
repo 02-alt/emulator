@@ -352,7 +352,9 @@ final class PlaySession: NSObject {
 
     private func saveScreenshot() {
         var buffer = [UInt32](repeating: 0, count: driver.width * driver.height)
-        let (w, h) = buffer.withUnsafeMutableBufferPointer { driver.copyLatestFrame(into: $0.baseAddress!) }
+        let (w, h) = buffer.withUnsafeMutableBufferPointer {
+            driver.copyLatestFrame(into: $0.baseAddress!, capacity: $0.count)
+        }
         guard let png = PlaySession.pngData(rgba: buffer, width: w, height: h) else { return }
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
         let safe = displayTitle.replacingOccurrences(of: "/", with: "-")
@@ -446,7 +448,9 @@ final class PlaySession: NSObject {
     /// The current frame encoded as PNG (used for slot thumbnails).
     private func currentFramePNG() -> Data? {
         var buffer = [UInt32](repeating: 0, count: driver.width * driver.height)
-        let (w, h) = buffer.withUnsafeMutableBufferPointer { driver.copyLatestFrame(into: $0.baseAddress!) }
+        let (w, h) = buffer.withUnsafeMutableBufferPointer {
+            driver.copyLatestFrame(into: $0.baseAddress!, capacity: $0.count)
+        }
         return PlaySession.pngData(rgba: buffer, width: w, height: h)
     }
 

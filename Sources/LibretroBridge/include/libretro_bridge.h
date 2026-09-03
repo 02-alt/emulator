@@ -40,10 +40,16 @@ void libretro_bridge_run_frame(LibretroCoreHandle* c);
 /// so callers must re-read it after every `run_frame` rather than caching it once.
 void libretro_bridge_dimensions(LibretroCoreHandle* c, uint32_t* width, uint32_t* height);
 
-/// Copy the latest frame into `out` (must hold width*height pixels) as RGBA8888 in memory byte
-/// order R,G,B,A — matching the app's Metal `.rgba8Unorm` path, whatever pixel format the core
-/// emitted. If the core duped the frame (emitted NULL), the previous frame is copied.
-void libretro_bridge_video(LibretroCoreHandle* c, uint32_t* out);
+/// The core's largest possible framebuffer, from get_system_av_info at load (already reflecting the
+/// internal-resolution option). Size frame buffers to this so a mid-game mode change to a bigger
+/// frame never overruns them. 0×0 before a game is loaded.
+void libretro_bridge_max_dimensions(LibretroCoreHandle* c, uint32_t* width, uint32_t* height);
+
+/// Copy the latest frame into `out` as RGBA8888 in memory byte order R,G,B,A — matching the app's
+/// Metal `.rgba8Unorm` path, whatever pixel format the core emitted. At most `out_cap` pixels are
+/// written; a frame larger than `out_cap` is truncated rather than overrunning the buffer, so pass
+/// the buffer's true capacity. If the core duped the frame (emitted NULL), the previous is copied.
+void libretro_bridge_video(LibretroCoreHandle* c, uint32_t* out, size_t out_cap);
 
 /// Audio sample rate (Hz) and nominal video FPS the core reports via retro_get_system_av_info.
 double libretro_bridge_sample_rate(LibretroCoreHandle* c);

@@ -43,13 +43,22 @@ public final class PSXCore: EmulatorCore {
         var w: UInt32 = 0
         var h: UInt32 = 0
         libretro_bridge_dimensions(handle, &w, &h)
-        // Before the first frame the core hasn't reported a size; hand back the scaled max so callers
-        // that size a buffer up front never under-allocate for a later, larger (upscaled) frame.
-        if w == 0 || h == 0 {
-            return (Self.nativeMaxResolution.width * internalScale,
-                    Self.nativeMaxResolution.height * internalScale)
-        }
+        // Before the first frame the core hasn't reported a size; hand back the max so callers that
+        // size a buffer up front never under-allocate for a later, larger (upscaled) frame.
+        if w == 0 || h == 0 { return maxVideoSize }
         return (Int(w), Int(h))
+    }
+
+    /// The largest frame the core can emit, from its advertised geometry (already reflecting the
+    /// internal-resolution option applied at load). Frame buffers are sized to this — the previous
+    /// hardcoded `nativeMaxResolution × internalScale` guess could be smaller than a real frame and
+    /// overran the buffers. Falls back to that guess only if the core reports nothing yet.
+    public var maxVideoSize: (width: Int, height: Int) {
+        var w: UInt32 = 0
+        var h: UInt32 = 0
+        libretro_bridge_max_dimensions(handle, &w, &h)
+        return (max(Int(w), Self.nativeMaxResolution.width * internalScale),
+                max(Int(h), Self.nativeMaxResolution.height * internalScale))
     }
 
     /// - Parameters:
@@ -105,8 +114,11 @@ public final class PSXCore: EmulatorCore {
     /// internal-resolution scale sharpens 3D; dithering follows the internal resolution so it stays
     /// clean when upscaled.
     private func applyEnhancements() {
-        let scale = ["1x(native)", "2x", "4x", "8x", "16x"]
-        let res = scale[min(max(internalScale - 1, 0), scale.count - 1)]
+        // Beetle PSX's `internal_resolution` option is keyed by the multiplier itself ("2x", "4x",
+        // "8x", "16x"; 1× is "1x(native)"). `internalScale` already *is* that multiplier, so map by
+        // value — NOT by array index. Indexing `["1x","2x","4x",…][internalScale - 1]` mapped a 4×
+        // setting to "8x", rendering (and trying to buffer) a frame twice the intended size.
+        let res = internalScale <= 1 ? "1x(native)" : "\(internalScale)x"
         libretro_bridge_set_option(handle, "beetle_psx_pgxp_mode", "memory only")
         libretro_bridge_set_option(handle, "beetle_psx_internal_resolution", res)
         libretro_bridge_set_option(handle, "beetle_psx_dither_mode", "internal resolution")
@@ -125,8 +137,8 @@ public final class PSXCore: EmulatorCore {
     public func reset() { libretro_bridge_reset(handle) }
     public func runFrame() { libretro_bridge_run_frame(handle) }
 
-    public func copyVideo(into buffer: UnsafeMutablePointer<UInt32>) {
-        libretro_bridge_video(handle, buffer)
+    public func copyVideo(into buffer: UnsafeMutablePointer<UInt32>, capacity: Int) {
+        libretro_bridge_video(handle, buffer, capacity)
     }
 
     public func readAudio(into buffer: UnsafeMutablePointer<Int16>, maxFrames: Int) -> Int {

@@ -21,7 +21,7 @@ final class PadInputTests: XCTestCase {
             apply(core)
             core.runFrame()
             var buf = [UInt32](repeating: 0, count: core.videoSize.width * core.videoSize.height)
-            buf.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!) }
+            buf.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!, capacity: $0.count) }
             return buf
         }
         XCTAssertEqual(frame { $0.setInput(PadInput(buttons: .south)) },
