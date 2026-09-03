@@ -96,10 +96,11 @@ final class SettingsView: NSView {
     private var pendingUpdateURL: URL?
 
     private enum Tab: Int, CaseIterable {
-        case video, audio, controls, emulation, achievements, storage, about
+        case video, systems, audio, controls, emulation, achievements, storage, about
         var title: String {
             switch self {
             case .video: "Video"
+            case .systems: "Systems"
             case .audio: "Audio"
             case .controls: "Controls"
             case .emulation: "Emulation"
@@ -113,6 +114,7 @@ final class SettingsView: NSView {
         var icon: String {
             switch self {
             case .video: "tv"
+            case .systems: "square.stack.3d.up"
             case .audio: "speaker.wave.2"
             case .controls: "gamecontroller"
             case .emulation: "cpu"
@@ -258,8 +260,11 @@ final class SettingsView: NSView {
             stack.addArrangedSubview(hint("A live sample rendered through the current settings. "
                 + "The sweeping sun shows the ghosting trail; the checker patch shows the LCD grid."))
 
+        case .systems:
+            // Per-console settings live here so the global tabs (Video/Audio/…) don't fill up with
+            // one section per core as more consoles land. Only the PlayStation needs options today.
             stack.addArrangedSubview(header("PlayStation"))
-            // BIOS is managed in its own panel so the per-region rows don't crowd this pane.
+            // BIOS is managed in its own overlay panel so the per-region rows don't crowd this pane.
             stack.addArrangedSubview(PixelButton(title: "Manage BIOS…") { [weak self] in
                 self?.presentBiosManager()
             })
