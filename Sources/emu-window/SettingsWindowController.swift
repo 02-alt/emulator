@@ -259,6 +259,17 @@ final class SettingsView: NSView {
                 + "The sweeping sun shows the ghosting trail; the checker patch shows the LCD grid."))
 
             stack.addArrangedSubview(header("PlayStation"))
+            // BIOS coverage by region — add each region so games boot on their intended BIOS.
+            let covered = PSXBios.installedRegions
+            let coverage = PSXRegion.allCases
+                .map { "\($0.flag) \($0.displayName) \(covered.contains($0) ? "✓" : "—")" }
+                .joined(separator: "    ")
+            stack.addArrangedSubview(PixelButton(title: PSXBios.isInstalled ? "Manage BIOS…" : "Add BIOS…") { [weak self] in
+                PSXBiosOnboarding.present(in: self?.window) { self?.refresh() }
+            })
+            stack.addArrangedSubview(hint("Console BIOS   \(coverage)\n\nA PlayStation needs its BIOS to boot. "
+                + "Add each region and every game runs on its own; games still play on any installed BIOS."))
+
             let scales = [1, 2, 4, 8]
             let res = PixelSegmented(titles: ["Native", "2×", "4×", "8×"],
                                      selected: scales.firstIndex(of: Settings.shared.psxInternalScale) ?? 1)

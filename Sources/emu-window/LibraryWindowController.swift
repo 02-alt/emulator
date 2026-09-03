@@ -876,11 +876,28 @@ final class LibraryWindowController: NSObject {
         }
         // PlayStation games can't boot without the console BIOS. Instead of failing, run the friendly
         // one-time setup, then continue into the launch once a BIOS is installed.
-        if game.system == .ps1, !PSXBios.isInstalled {
-            PSXBiosOnboarding.present(in: window, onReady: { [weak self] in
-                self?.launch(game, resumeState: resumeState)
-            })
-            return
+        if game.system == .ps1 {
+            if !PSXBios.isInstalled {
+                PSXBiosOnboarding.present(in: window, onReady: { [weak self] in
+                    self?.launch(game, resumeState: resumeState)
+                })
+                return
+            }
+            // A BIOS exists, but is this disc's own region covered? Region-checking titles want the
+            // exact BIOS; nudge once to add it, while letting the user play on the fallback if they'd
+            // rather. Unknown/undetectable regions (.chd/.pbp) just fall through and boot.
+            if let region = PSXRegion.detect(disc: game.romURL),
+               !PSXBios.installedRegions.contains(region),
+               !Settings.shared.psxRegionPromptDismissed(region) {
+                PSXBiosOnboarding.presentMissing(
+                    region: region, in: window,
+                    onReady: { [weak self] in self?.launch(game, resumeState: resumeState) },
+                    onSkip: { [weak self] in
+                        Settings.shared.dismissPSXRegionPrompt(region)
+                        self?.launch(game, resumeState: resumeState)
+                    })
+                return
+            }
         }
         var updated = game
         updated.lastPlayedAt = Date()

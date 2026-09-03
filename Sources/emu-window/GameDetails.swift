@@ -22,8 +22,12 @@ enum GameDetails {
         }
 
         var identity: [(String, String?)] = [("System", game.system.displayName)]
-        // Region: the GBA header, else derived from the PS1 filename's region tag.
-        let region = header?.region ?? (game.system == .ps1 ? psxRegion(game.romFilenameStem) : nil)
+        // Region: the GBA header; for PS1 the disc's own boot serial is authoritative (SLES/SLUS/…),
+        // falling back to the filename's Redump tag when the disc can't be cracked (.chd/.pbp).
+        let region = header?.region
+            ?? (game.system == .ps1
+                ? (PSXRegion.detect(disc: game.romURL)?.displayName ?? psxRegion(game.romFilenameStem))
+                : nil)
         identity.append(("Region", region))
         identity.append(("Publisher", meta?.publisher ?? header?.publisher))   // DB name preferred
         let serial = (header?.serial).flatMap { $0.isEmpty ? nil : $0 } ?? meta?.serial
