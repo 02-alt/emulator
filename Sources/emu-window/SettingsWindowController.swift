@@ -95,6 +95,9 @@ final class SettingsView: NSView {
     /// The download link for a found update (About tab), opened by the Download button.
     private var pendingUpdateURL: URL?
 
+    /// The PlayStation BIOS panel while it's open (held so it isn't deallocated).
+    private var biosManager: PSXBiosManagerWindow?
+
     private enum Tab: Int, CaseIterable {
         case video, audio, controls, emulation, achievements, storage, about
         var title: String {
@@ -259,16 +262,13 @@ final class SettingsView: NSView {
                 + "The sweeping sun shows the ghosting trail; the checker patch shows the LCD grid."))
 
             stack.addArrangedSubview(header("PlayStation"))
-            stack.addArrangedSubview(hint("A PlayStation needs its console BIOS to boot. Add each region "
-                + "so every game runs on its intended BIOS — games still play on any one you have. Use a "
-                + "BIOS dumped from a console you own (a 512 KB file like scph5501.bin)."))
-            // One row per region: status + its own Add / Replace button.
-            for region in PSXRegion.allCases {
-                stack.addArrangedSubview(psxBiosRow(region))
-            }
-            stack.addArrangedSubview(PixelButton(title: "How to Dump Your BIOS ↗") {
-                PSXBiosOnboarding.openDumpingGuide()
+            // BIOS is managed in its own panel so the per-region rows don't crowd this pane.
+            stack.addArrangedSubview(PixelButton(title: "Manage BIOS…") { [weak self] in
+                self?.presentBiosManager()
             })
+            stack.addArrangedSubview(hint("Console BIOS — \(PSXBios.installedRegions.count)/3 regions "
+                + "installed. A PlayStation needs its BIOS to boot; add each region so every game runs "
+                + "on its own."))
 
             let scales = [1, 2, 4, 8]
             let res = PixelSegmented(titles: ["Native", "2×", "4×", "8×"],
@@ -597,20 +597,12 @@ final class SettingsView: NSView {
         return r
     }
 
-    /// A per-region PlayStation BIOS row: region name on the left, its status + an Add/Replace button
-    /// on the right. Each region gets its own button so the user adds them independently.
-    private func psxBiosRow(_ region: PSXRegion) -> NSStackView {
-        let installed = PSXBios.installedRegions.contains(region)
-        let status = NSTextField(labelWithAttributedString:
-            DS.Text.value(installed ? "installed · \(region.biosFilename)" : "\(region.biosFilename) · missing"))
-        let button = PixelButton(title: installed ? "Replace…" : "Add…") { [weak self] in
-            PSXBiosOnboarding.addBIOS(for: region, in: self?.window) { self?.refresh() }
-        }
-        let controls = NSStackView(views: [status, button])
-        controls.orientation = .horizontal
-        controls.alignment = .centerY
-        controls.spacing = DS.Space.md
-        return row("\(region.flag) \(region.displayName)", controls)
+    /// Open the standalone BIOS panel; refresh this pane's summary when it closes.
+    private func presentBiosManager() {
+        let mgr = PSXBiosManagerWindow()
+        mgr.onClose = { [weak self] in self?.biosManager = nil; self?.refresh() }
+        biosManager = mgr
+        mgr.show(over: window)
     }
 
     private func header(_ text: String) -> NSView {
@@ -979,7 +971,8 @@ private final class PixelSlider: NSView {
 // MARK: - Pixel button
 
 /// A bordered pixel-chip button that fills on hover — the app's flat, monochrome push button.
-private final class PixelButton: NSView {
+/// Module-internal so panels outside this file (e.g. the PS1 BIOS panel) share the same control.
+final class PixelButton: NSView {
     private let onClick: () -> Void
     private var title: String
     private var hovered = false
