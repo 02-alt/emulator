@@ -259,16 +259,16 @@ final class SettingsView: NSView {
                 + "The sweeping sun shows the ghosting trail; the checker patch shows the LCD grid."))
 
             stack.addArrangedSubview(header("PlayStation"))
-            // BIOS coverage by region — add each region so games boot on their intended BIOS.
-            let covered = PSXBios.installedRegions
-            let coverage = PSXRegion.allCases
-                .map { "\($0.flag) \($0.displayName) \(covered.contains($0) ? "✓" : "—")" }
-                .joined(separator: "    ")
-            stack.addArrangedSubview(PixelButton(title: PSXBios.isInstalled ? "Manage BIOS…" : "Add BIOS…") { [weak self] in
-                PSXBiosOnboarding.present(in: self?.window) { self?.refresh() }
+            stack.addArrangedSubview(hint("A PlayStation needs its console BIOS to boot. Add each region "
+                + "so every game runs on its intended BIOS — games still play on any one you have. Use a "
+                + "BIOS dumped from a console you own (a 512 KB file like scph5501.bin)."))
+            // One row per region: status + its own Add / Replace button.
+            for region in PSXRegion.allCases {
+                stack.addArrangedSubview(psxBiosRow(region))
+            }
+            stack.addArrangedSubview(PixelButton(title: "How to Dump Your BIOS ↗") {
+                PSXBiosOnboarding.openDumpingGuide()
             })
-            stack.addArrangedSubview(hint("Console BIOS   \(coverage)\n\nA PlayStation needs its BIOS to boot. "
-                + "Add each region and every game runs on its own; games still play on any installed BIOS."))
 
             let scales = [1, 2, 4, 8]
             let res = PixelSegmented(titles: ["Native", "2×", "4×", "8×"],
@@ -595,6 +595,22 @@ final class SettingsView: NSView {
         r.spacing = DS.Space.xs
         field.widthAnchor.constraint(equalToConstant: 300).isActive = true
         return r
+    }
+
+    /// A per-region PlayStation BIOS row: region name on the left, its status + an Add/Replace button
+    /// on the right. Each region gets its own button so the user adds them independently.
+    private func psxBiosRow(_ region: PSXRegion) -> NSStackView {
+        let installed = PSXBios.installedRegions.contains(region)
+        let status = NSTextField(labelWithAttributedString:
+            DS.Text.value(installed ? "installed · \(region.biosFilename)" : "\(region.biosFilename) · missing"))
+        let button = PixelButton(title: installed ? "Replace…" : "Add…") { [weak self] in
+            PSXBiosOnboarding.addBIOS(for: region, in: self?.window) { self?.refresh() }
+        }
+        let controls = NSStackView(views: [status, button])
+        controls.orientation = .horizontal
+        controls.alignment = .centerY
+        controls.spacing = DS.Space.md
+        return row("\(region.flag) \(region.displayName)", controls)
     }
 
     private func header(_ text: String) -> NSView {

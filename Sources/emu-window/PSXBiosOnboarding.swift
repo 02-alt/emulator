@@ -44,6 +44,23 @@ enum PSXBiosOnboarding {
             ])
     }
 
+    /// Add (or replace) the BIOS for a specific region — the entry point the per-region buttons in
+    /// Settings use. Goes straight to the file picker, defaulting the region to `region` if the dump
+    /// can't identify itself. `onReady` fires after a successful install (callers refresh their UI).
+    static func addBIOS(for region: PSXRegion?, in window: NSWindow?, onReady: (() -> Void)? = nil) {
+        chooseFile(in: window, preferred: region, onReady: onReady)
+    }
+
+    /// Open the user's browser on a guide for **legally** dumping a PlayStation BIOS from a console
+    /// they own — deliberately not a search for the copyrighted image itself.
+    static func openDumpingGuide() {
+        let query = "how to dump PlayStation 1 BIOS from your own console"
+        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+        if let url = URL(string: "https://duckduckgo.com/?q=\(encoded)") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     // MARK: - First run
 
     private static func explain(in window: NSWindow?, onReady: (() -> Void)?) {
