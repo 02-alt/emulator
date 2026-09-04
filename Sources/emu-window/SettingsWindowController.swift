@@ -96,10 +96,11 @@ final class SettingsView: NSView {
     private var pendingUpdateURL: URL?
 
     private enum Tab: Int, CaseIterable {
-        case video, audio, controls, emulation, achievements, storage, about
+        case video, systems, audio, controls, emulation, achievements, storage, about
         var title: String {
             switch self {
             case .video: "Video"
+            case .systems: "Systems"
             case .audio: "Audio"
             case .controls: "Controls"
             case .emulation: "Emulation"
@@ -113,6 +114,7 @@ final class SettingsView: NSView {
         var icon: String {
             switch self {
             case .video: "tv"
+            case .systems: "square.stack.3d.up"
             case .audio: "speaker.wave.2"
             case .controls: "gamecontroller"
             case .emulation: "cpu"
@@ -258,7 +260,18 @@ final class SettingsView: NSView {
             stack.addArrangedSubview(hint("A live sample rendered through the current settings. "
                 + "The sweeping sun shows the ghosting trail; the checker patch shows the LCD grid."))
 
+        case .systems:
+            // Per-console settings live here so the global tabs (Video/Audio/…) don't fill up with
+            // one section per core as more consoles land. Only the PlayStation needs options today.
             stack.addArrangedSubview(header("PlayStation"))
+            // BIOS is managed in its own overlay panel so the per-region rows don't crowd this pane.
+            stack.addArrangedSubview(PixelButton(title: "Manage BIOS…") { [weak self] in
+                self?.presentBiosManager()
+            })
+            stack.addArrangedSubview(hint("Console BIOS — \(PSXBios.installedRegions.count)/3 regions "
+                + "installed. A PlayStation needs its BIOS to boot; add each region so every game runs "
+                + "on its own."))
+
             let scales = [1, 2, 4, 8]
             let res = PixelSegmented(titles: ["Native", "2×", "4×", "8×"],
                                      selected: scales.firstIndex(of: Settings.shared.psxInternalScale) ?? 1)
@@ -584,6 +597,11 @@ final class SettingsView: NSView {
         r.spacing = DS.Space.xs
         field.widthAnchor.constraint(equalToConstant: 300).isActive = true
         return r
+    }
+
+    /// Open the BIOS manager as an overlay over the current window; refresh the summary on close.
+    private func presentBiosManager() {
+        PSXBiosPanel.present(in: window) { [weak self] in self?.refresh() }
     }
 
     private func header(_ text: String) -> NSView {
@@ -952,7 +970,8 @@ private final class PixelSlider: NSView {
 // MARK: - Pixel button
 
 /// A bordered pixel-chip button that fills on hover — the app's flat, monochrome push button.
-private final class PixelButton: NSView {
+/// Module-internal so panels outside this file (e.g. the PS1 BIOS panel) share the same control.
+final class PixelButton: NSView {
     private let onClick: () -> Void
     private var title: String
     private var hovered = false

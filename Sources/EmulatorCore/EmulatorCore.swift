@@ -17,7 +17,8 @@ public protocol EmulatorCore: AnyObject {
     /// Which system this core emulates.
     static var system: EmulatedSystem { get }
 
-    /// Output framebuffer dimensions (== system native resolution).
+    /// Output framebuffer dimensions of the current frame. Fixed for the GBA/GBC; the PS1 changes it
+    /// per frame (256..640 wide, interlacing), so re-read it after each `runFrame`.
     var videoSize: (width: Int, height: Int) { get }
 
     /// Audio sample rate the core produces, in Hz (stereo, interleaved Int16).
@@ -41,9 +42,11 @@ public protocol EmulatorCore: AnyObject {
     /// video and audio are ready to be drained.
     func runFrame()
 
-    /// Copy the latest RGBA8888 framebuffer into `buffer`, which must hold at least
-    /// `videoSize.width * videoSize.height` pixels.
-    func copyVideo(into buffer: UnsafeMutablePointer<UInt32>)
+    /// Copy the latest RGBA8888 framebuffer into `buffer`. At most `capacity` pixels are written, so
+    /// an oversized frame is safely truncated instead of overrunning the buffer; pass the buffer's
+    /// true pixel capacity. Size the buffer to at least `videoSize.width * videoSize.height` for a
+    /// complete frame (the PS1 varies its frame size at runtime — see `maxVideoSize`).
+    func copyVideo(into buffer: UnsafeMutablePointer<UInt32>, capacity: Int)
 
     /// Drain up to `maxFrames` stereo sample-frames into `buffer` (2 * Int16 per frame).
     /// Returns the number of sample-frames actually written.
@@ -91,6 +94,11 @@ public extension EmulatorCore {
 
     /// Default: a core that only understands GBA keys sees the GBA projection of the full input.
     func setInput(_ input: PadInput) { setButtons(input.gbaButtons) }
+
+    /// The largest frame the core can ever emit — what frame buffers must be sized to. Fixed-size
+    /// cores (GBA/GBC) never vary, so this is just `videoSize`; the PS1 overrides it with the core's
+    /// advertised geometry ceiling, since its frame grows with the internal-resolution upscale.
+    var maxVideoSize: (width: Int, height: Int) { videoSize }
 
     /// Default: the system's fixed nominal rate. Cores whose content varies by region (PS1) override.
     var nominalRefreshRate: Double { Self.system.refreshRate }

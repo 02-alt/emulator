@@ -1,5 +1,6 @@
 import EmulatorCore
 import Foundation
+import LibraryKit
 
 /// User-tunable preferences, persisted in `UserDefaults`. Deliberately small — just the handful of
 /// options a GBA player actually reaches for (display crispness, master volume, rewind, auto-resume)
@@ -108,6 +109,7 @@ final class Settings {
         static let trophyNotifications = "achievements.notifications"
         static let psxInternalScale = "ps1.internalScale"
         static let psxWidescreen = "ps1.widescreen"
+        static let psxRegionPromptsDismissed = "ps1.regionPromptsDismissed"
     }
 
     private init() {
@@ -135,6 +137,19 @@ final class Settings {
     var psxInternalScale: Int {
         get { let v = defaults.integer(forKey: Key.psxInternalScale); return v == 0 ? 2 : v }
         set { defaults.set(newValue, forKey: Key.psxInternalScale); changed() }
+    }
+
+    /// Whether the user has already dismissed the "add this region's BIOS" nudge for `region`. We
+    /// nudge at most once per region so a missing regional BIOS informs without nagging.
+    func psxRegionPromptDismissed(_ region: PSXRegion) -> Bool {
+        (defaults.stringArray(forKey: Key.psxRegionPromptsDismissed) ?? []).contains(region.rawValue)
+    }
+
+    /// Remember that the user chose to play without `region`'s BIOS, so we don't prompt again for it.
+    func dismissPSXRegionPrompt(_ region: PSXRegion) {
+        var set = Set(defaults.stringArray(forKey: Key.psxRegionPromptsDismissed) ?? [])
+        set.insert(region.rawValue)
+        defaults.set(Array(set), forKey: Key.psxRegionPromptsDismissed)
     }
 
     /// PlayStation widescreen hack: render 3D anamorphically at 16:9. Best for fully-3D games; 2D

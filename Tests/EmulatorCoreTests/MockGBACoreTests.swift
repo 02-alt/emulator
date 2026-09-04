@@ -15,9 +15,9 @@ final class MockGBACoreTests: XCTestCase {
         var b = [UInt32](repeating: 0, count: count)
 
         core.runFrame()
-        a.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!) }
+        a.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!, capacity: $0.count) }
         core.runFrame()
-        b.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!) }
+        b.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!, capacity: $0.count) }
 
         XCTAssertNotEqual(a, b, "Framebuffer should animate between frames")
     }
@@ -30,12 +30,12 @@ final class MockGBACoreTests: XCTestCase {
 
         core.setButtons([])
         core.runFrame()
-        released.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!) }
+        released.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!, capacity: $0.count) }
 
         core.reset()
         core.setButtons([.a])
         core.runFrame()
-        pressed.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!) }
+        pressed.withUnsafeMutableBufferPointer { core.copyVideo(into: $0.baseAddress!, capacity: $0.count) }
 
         XCTAssertNotEqual(released, pressed, "Held buttons should affect output")
     }

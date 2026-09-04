@@ -70,6 +70,8 @@ struct LibretroCoreHandle {
     uint32_t* fb;
     size_t    fb_cap;            // capacity in pixels
     uint32_t  fb_w, fb_h;
+    uint32_t  fb_max_w, fb_max_h;   // core-advertised geometry ceiling (get_system_av_info); the
+                                    // frontend sizes its buffers to this so no frame overruns them
 
     // Audio: linear queue of interleaved stereo Int16, drained by read_audio.
     int16_t*  audio;
@@ -410,6 +412,11 @@ bool libretro_bridge_load_game(LibretroCoreHandle* c, const char* rom_path) {
     c->get_system_av_info(&av);
     c->sample_rate = av.timing.sample_rate > 0 ? av.timing.sample_rate : 44100.0;
     c->fps         = av.timing.fps > 0 ? av.timing.fps : 60.0;
+    // The core's largest possible framebuffer (already reflecting the internal-resolution option we
+    // set before load). The frontend allocates its frame buffers from this, so a PS1 mode change to
+    // a bigger frame can't overrun them — the hardcoded ceiling it used before could, and did.
+    c->fb_max_w = av.geometry.max_width;
+    c->fb_max_h = av.geometry.max_height;
     return true;
 }
 
@@ -430,9 +437,19 @@ void libretro_bridge_dimensions(LibretroCoreHandle* c, uint32_t* width, uint32_t
     if (height) *height = c ? c->fb_h : 0;
 }
 
-void libretro_bridge_video(LibretroCoreHandle* c, uint32_t* out) {
+void libretro_bridge_max_dimensions(LibretroCoreHandle* c, uint32_t* width, uint32_t* height) {
+    if (width)  *width  = c ? c->fb_max_w : 0;
+    if (height) *height = c ? c->fb_max_h : 0;
+}
+
+void libretro_bridge_video(LibretroCoreHandle* c, uint32_t* out, size_t out_cap) {
     if (!c || !out || !c->fb) return;
-    memcpy(out, c->fb, (size_t)c->fb_w * c->fb_h * sizeof(uint32_t));
+    // Never write past the caller's buffer, whatever size the core reports this frame. The PS1 grows
+    // its framebuffer with the internal-resolution upscale; a frame larger than `out` would otherwise
+    // be a heap overflow (it was — an unbounded copy here SIGSEGV'd the emulation thread).
+    size_t n = (size_t)c->fb_w * c->fb_h;
+    if (n > out_cap) n = out_cap;
+    memcpy(out, c->fb, n * sizeof(uint32_t));
 }
 
 double libretro_bridge_sample_rate(LibretroCoreHandle* c) { return c ? c->sample_rate : 44100.0; }

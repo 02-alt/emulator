@@ -61,9 +61,9 @@ public final class MockGBACore: EmulatorCore {
         audioAvailFrames += audioSampleRate / 60
     }
 
-    public func copyVideo(into buffer: UnsafeMutablePointer<UInt32>) {
+    public func copyVideo(into buffer: UnsafeMutablePointer<UInt32>, capacity: Int) {
         framebuffer.withUnsafeBufferPointer { src in
-            buffer.update(from: src.baseAddress!, count: src.count)
+            buffer.update(from: src.baseAddress!, count: min(src.count, capacity))
         }
     }
 
